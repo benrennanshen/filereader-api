@@ -1,4 +1,6 @@
 import os
+import asyncio
+from typing import List
 
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
@@ -29,7 +31,7 @@ excel_handler = ExcelToMarkdownHandler()
 pdf_handler = PdfToMarkdownHandler()
 
 
-def build_response(http_code: int, data: str, message: str) -> JSONResponse:
+def build_response(http_code: int, data, message: str) -> JSONResponse:
     """统一响应格式构建函数。"""
     return JSONResponse(
         status_code=http_code,
@@ -39,6 +41,42 @@ def build_response(http_code: int, data: str, message: str) -> JSONResponse:
             "message": message,
         },
     )
+
+
+async def convert_single_file_to_markdown(file: UploadFile) -> str:
+    """转换单个文件到 Markdown，返回转换结果字符串。如果转换失败，返回错误信息。"""
+    filename = file.filename or ""
+
+    # 简单根据扩展名判断类型
+    ext = ""
+    if "." in filename:
+        ext = filename.rsplit(".", 1)[-1].lower()
+
+    try:
+        raw_content = await file.read()
+        if not raw_content:
+            return f"文件 {filename} 为空"
+
+        if len(raw_content) > MAX_FILE_SIZE:
+            return f"文件 {filename} 超过大小限制 (50MB)"
+
+        if ext in HTML_EXTENSIONS:
+            markdown_text = _convert_html_bytes(raw_content)
+        elif ext == "docx":
+            markdown_text = docx_handler.convert(raw_content)
+        elif ext in TEXT_EXTENSIONS:
+            markdown_text = _convert_text_bytes(raw_content)
+        elif ext in EXCEL_EXTENSIONS:
+            markdown_text = excel_handler.convert(raw_content, ext)
+        elif ext in PDF_EXTENSIONS:
+            markdown_text = pdf_handler.convert(raw_content)
+        else:
+            return f"文件 {filename} 类型不支持: {ext or 'unknown'}"
+
+        return markdown_text
+
+    except Exception as exc:  # noqa: BLE001
+        return f"文件 {filename} 转换失败: {exc}"
 
 
 @app.post(
@@ -86,6 +124,34 @@ async def convert_to_markdown(file: UploadFile = File(...)):
     except Exception as exc:  # noqa: BLE001
         # 实际项目中这里建议增加日志记录
         return build_response(500, "", f"转换失败: {exc}")
+
+
+@app.post(
+    "/convert-multiple-to-md",
+    summary="批量文档转 Markdown",
+    description=(
+        "将上传的多个文件批量转换为 Markdown 文本数组。\n\n"
+        "- 支持格式：`html` / `htm`、`txt`、`docx`、`xls` / `xlsx`、`pdf`（扫描件会自动 OCR）\n"
+        "- 文件大小：每个文件限制为 50MB\n"
+        "- 处理方式：并行处理多个文件以提高效率\n"
+        "- 返回字段：`data` 为 Markdown 字符串数组（按上传顺序），`message` 表示处理状态"
+    ),
+)
+async def convert_multiple_to_markdown(files: List[UploadFile] = File(...)):
+    """接受多个上传文件并将其内容批量转换为 Markdown 数组。"""
+    if not files:
+        return build_response(400, [], "没有上传文件")
+
+    try:
+        # 使用异步任务并行处理多个文件转换
+        tasks = [convert_single_file_to_markdown(file) for file in files]
+        results = await asyncio.gather(*tasks)
+
+        return build_response(200, results, f"成功处理 {len(files)} 个文件")
+
+    except Exception as exc:  # noqa: BLE001
+        # 实际项目中这里建议增加日志记录
+        return build_response(500, [], f"批量转换失败: {exc}")
 
 
 def _convert_html_bytes(raw_content: bytes) -> str:
