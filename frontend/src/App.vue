@@ -49,13 +49,30 @@ const escapeHtml = (value = '') =>
 
 const renderer = new marked.Renderer()
 renderer.image = ({ href = '', title, text }) => {
-  if (!href) return text || ''
+  if (!href) {
+    console.warn('图片URL为空', { title, text })
+    return text || ''
+  }
 
+  console.log('处理图片:', { href, title, text })
+  
+  // 如果是 data URI，直接使用
   const isDataUri = href.startsWith('data:')
-  const src = isDataUri ? href : `${IMAGE_DOWNLOAD_API}?image_url=${encodeURIComponent(href)}`
+  // 如果是 http:// 或 https:// 开头的完整URL，直接使用（不需要代理）
+  const isFullUrl = href.startsWith('http://') || href.startsWith('https://')
+  
+  let src
+  if (isDataUri || isFullUrl) {
+    src = href
+  } else {
+    // 其他情况（相对路径等）通过代理下载
+    src = `${IMAGE_DOWNLOAD_API}?image_url=${encodeURIComponent(href)}`
+  }
+  
   const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
   const altAttr = ` alt="${escapeHtml(text || '')}"`
 
+  console.log('生成的图片src:', src)
   return `<img src="${src}"${altAttr}${titleAttr} />`
 }
 
@@ -67,6 +84,20 @@ const renderedMarkdown = computed(() => {
 })
 
 const handleMarkdownReady = (content) => {
+  console.log('收到Markdown内容，长度:', content?.length)
+  // 检查markdown中是否包含图片
+  const imageMatches = content.match(/!\[([^\]]*)\]\(([^)]+)\)/g)
+  if (imageMatches) {
+    console.log('发现图片引用:', imageMatches)
+    imageMatches.forEach(match => {
+      const urlMatch = match.match(/\(([^)]+)\)/)
+      if (urlMatch) {
+        console.log('图片URL:', urlMatch[1])
+      }
+    })
+  } else {
+    console.warn('Markdown中没有找到图片引用')
+  }
   markdownContent.value = content
 }
 </script>

@@ -239,8 +239,21 @@ class DocxToMarkdownHandler:
         result = image_pattern.sub(replace_image, markdown_text)
         if replaced:
             logger.info(f"已将 {replaced} 张图片替换为 URL 引用")
+            # 检查生成的markdown中是否包含图片URL
+            image_urls = re.findall(r'!\[([^\]]*)\]\(([^)]+)\)', result)
+            if image_urls:
+                logger.info(f"生成的Markdown中包含 {len(image_urls)} 个图片URL:")
+                for alt, url in image_urls[:5]:  # 只显示前5个
+                    logger.info(f"  - [{alt}]({url})")
+            else:
+                logger.warning("生成的Markdown中没有找到图片URL，可能替换失败")
         else:
             logger.warning("未找到可替换的图片路径，请检查图片路径匹配逻辑")
+            # 检查原始markdown中是否有图片引用
+            original_images = image_pattern.findall(markdown_text)
+            if original_images:
+                logger.warning(f"原始Markdown中有 {len(original_images)} 个图片引用，但未能匹配到path_map")
+                logger.debug(f"原始图片路径示例: {original_images[:3]}")
         return result
 
     def _store_media_files(self, media_dir: str, storage_root: Path) -> dict[str, str]:
