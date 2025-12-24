@@ -179,6 +179,7 @@ class DocxToMarkdownHandler:
         logger.info(f"在 Markdown 中找到 {len(all_images)} 个图片引用")
 
         replaced = 0
+        media_path = Path(media_dir)
 
         def replace_image(match: re.Match) -> str:
             nonlocal replaced
@@ -193,17 +194,40 @@ class DocxToMarkdownHandler:
                 logger.debug(f"跳过已处理的图片路径: {image_path}")
                 return match.group(0)
 
-            normalized = image_path.lstrip("./\\")
-            normalized = normalized.replace("\\", "/")
-            basename = Path(normalized).name
+            # 标准化路径：统一使用正斜杠
+            normalized = image_path.replace("\\", "/")
             
-            logger.debug(f"尝试匹配图片路径: 原始={image_path}, 标准化={normalized}, 文件名={basename}")
+            # 尝试多种匹配方式：
+            # 1. 如果路径是绝对路径且包含 media_dir，提取相对路径
+            try:
+                if os.path.isabs(normalized) and str(media_path) in normalized:
+                    # 提取相对于 media_dir 的路径
+                    abs_path = Path(normalized)
+                    if abs_path.exists() and abs_path.is_relative_to(media_path):
+                        rel_path = abs_path.relative_to(media_path).as_posix()
+                        if rel_path in path_map:
+                            replaced += 1
+                            final_url = path_map[rel_path]
+                            logger.info(f"图片路径匹配成功（绝对路径）: {image_path} -> {final_url}")
+                            return f"![{alt_text}]({final_url})"
+            except (ValueError, TypeError):
+                pass
             
-            for key in (normalized, basename):
+            # 2. 去掉开头的 ./ 和 /，然后尝试匹配
+            normalized_clean = normalized.lstrip("./")
+            basename = Path(normalized_clean).name
+            
+            logger.debug(f"尝试匹配图片路径: 原始={image_path}, 标准化={normalized_clean}, 文件名={basename}")
+            
+            # 3. 尝试匹配：标准化路径、清理后的路径、文件名
+            for key in (normalized_clean, normalized, basename):
                 if key in path_map:
                     replaced += 1
                     final_url = path_map[key]
-                    logger.info(f"图片路径匹配成功: {image_path} -> {final_url}")
+                    # 从 URL 中提取存储路径用于日志显示（相对于 STORAGE_ROOT）
+                    url_path = final_url.replace(self._storage_url_prefix, "").lstrip("/")
+                    storage_path = str(storage_root / url_path) if url_path else str(storage_root)
+                    logger.info(f"图片路径匹配成功: 临时路径={image_path} -> 存储路径={storage_path}, URL={final_url}")
                     return f"![{alt_text}]({final_url})"
 
             logger.warning(f"图片路径未找到映射，保留原路径: {image_path} (可用映射键: {list(path_map.keys())})")
@@ -250,7 +274,7 @@ class DocxToMarkdownHandler:
 
                 dest_path = target_dir / dest_name
                 try:
-                    shutil.move(str(src_path), dest_path)
+                    shutil.move(str(src_path), str(dest_path))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(f"移动图片失败 {src_path}: {exc}")
                     continue
@@ -262,9 +286,19 @@ class DocxToMarkdownHandler:
                 url_parts.append(dest_name)
                 url = "/".join(part.strip("/") for part in url_parts if part)
 
+                # 存储多种路径格式用于匹配：
+                # 1. 相对路径（相对于 media_dir）
                 path_map[rel_path] = url
+                # 2. 文件名
                 path_map[fname] = url
-                logger.debug(f"图片文件已迁移: {src_path} -> {dest_path}, URL: {url}")
+                # 3. 绝对路径（pandoc 可能在 markdown 中使用绝对路径）
+                path_map[str(src_path)] = url
+                path_map[str(src_path).replace("\\", "/")] = url
+                # 4. 标准化后的相对路径（去掉开头的 ./）
+                if rel_path.startswith("./"):
+                    path_map[rel_path[2:]] = url
+                
+                logger.info(f"图片文件已迁移到存储目录: {src_path} -> {dest_path} (URL: {url})")
 
         if path_map:
             logger.info(f"已迁移 {len(set(path_map.values()))} 个媒体文件到 {storage_root}，生成 {len(path_map)} 个路径映射")
