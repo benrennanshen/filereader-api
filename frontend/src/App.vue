@@ -20,7 +20,7 @@
                 <el-tag v-else type="info" size="small">等待上传</el-tag>
               </div>
             </template>
-            <div v-if="markdownContent" class="markdown-wrapper">
+            <div v-if="markdownContent" class="markdown-wrapper" ref="markdownWrapperRef">
               <div class="markdown-body" v-html="renderedMarkdown"></div>
             </div>
             <el-empty v-else description="请上传文件进行转换" :image-size="100" />
@@ -32,11 +32,12 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import { marked } from 'marked'
 import FileUpload from './components/FileUpload.vue'
 
 const markdownContent = ref('')
+const markdownWrapperRef = ref(null)
 const IMAGE_DOWNLOAD_API = '/api/download-image'
 
 const escapeHtml = (value = '') =>
@@ -48,24 +49,55 @@ const escapeHtml = (value = '') =>
     .replace(/'/g, '&#039;')
 
 const renderer = new marked.Renderer()
-renderer.image = ({ href = '', title, text }) => {
-  if (!href) {
-    console.warn('图片URL为空', { title, text })
-    return text || ''
+// marked 4.x+ 版本中，image 方法接收 (href, title, text) 三个参数
+renderer.image = (href = '', title = '', text = '') => {
+  // 调试：记录所有参数
+  console.log('图片渲染器被调用:', { 
+    href, 
+    title, 
+    text,
+    argsLength: arguments.length,
+    allArgs: Array.from(arguments)
+  })
+  
+  if (!href || href.trim() === '') {
+    console.warn('图片URL为空或无效，跳过渲染', { href, title, text })
+    // 如果 URL 为空，返回空字符串（不渲染），避免显示错误占位符
+    return ''
   }
 
   console.log('处理图片:', { href, title, text })
   
   // 如果是 data URI，直接使用
   const isDataUri = href.startsWith('data:')
-  // 如果是 http:// 或 https:// 开头的完整URL，直接使用（不需要代理）
-  const isFullUrl = href.startsWith('http://') || href.startsWith('https://')
   
   let src
-  if (isDataUri || isFullUrl) {
+  if (isDataUri) {
     src = href
+  } else if (href.startsWith('http://') || href.startsWith('https://')) {
+    // 如果是完整的URL，检查路径是否是 /static/...，如果是则转换为代理路径
+    try {
+      const url = new URL(href)
+      // 如果路径以 /static/ 开头，转换为代理路径（避免CORS问题）
+      if (url.pathname.startsWith('/static/')) {
+        // 转换为 /api/static/... 格式，通过 vite 代理访问
+        src = `/api${url.pathname}${url.search}`
+        console.log(`转换图片URL为代理路径: ${href} -> ${src}`)
+      } else {
+        // 其他外部URL，直接使用（可能需要CORS支持）
+        src = href
+      }
+    } catch (e) {
+      // URL解析失败，可能是相对路径，直接使用
+      console.warn('URL解析失败，使用原始href:', href, e)
+      src = href
+    }
+  } else if (href.startsWith('/static/')) {
+    // 相对路径以 /static/ 开头，也转换为代理路径
+    src = `/api${href}`
+    console.log(`转换相对路径为代理路径: ${href} -> ${src}`)
   } else {
-    // 其他情况（相对路径等）通过代理下载
+    // 其他相对路径或其他格式，通过代理下载
     src = `${IMAGE_DOWNLOAD_API}?image_url=${encodeURIComponent(href)}`
   }
   
@@ -73,14 +105,46 @@ renderer.image = ({ href = '', title, text }) => {
   const altAttr = ` alt="${escapeHtml(text || '')}"`
 
   console.log('生成的图片src:', src)
-  return `<img src="${src}"${altAttr}${titleAttr} />`
+  // 返回图片标签，事件监听会在 setupImageListeners 中添加
+  return `<img src="${src}"${altAttr}${titleAttr} style="max-width: 100%; height: auto;" />`
 }
 
-marked.use({ renderer })
+// 配置 marked，确保正确处理图片和 HTML
+marked.use({ 
+  renderer,
+  // 允许 HTML 标签（包括 img 标签）
+  breaks: true,
+  gfm: true
+})
 
 const renderedMarkdown = computed(() => {
   if (!markdownContent.value) return ''
-  return marked.parse(markdownContent.value)
+  
+  // 调试：检查 markdown 中的图片引用
+  const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)|<img[^>]+src=["']([^"']+)["']/gi
+  const imageMatches = markdownContent.value.match(imagePattern)
+  if (imageMatches) {
+    console.log('Markdown中的图片引用:', imageMatches)
+    imageMatches.forEach((match, index) => {
+      const urlMatch = match.match(/\(([^)]+)\)|src=["']([^"']+)["']/i)
+      if (urlMatch) {
+        const url = urlMatch[1] || urlMatch[2]
+        console.log(`  图片 ${index + 1}: URL = "${url}"`)
+        if (!url || url.trim() === '') {
+          console.error(`  警告: 图片 ${index + 1} 的URL为空!`, match)
+        }
+      } else {
+        console.error(`  警告: 无法从图片引用中提取URL:`, match)
+      }
+    })
+  }
+  
+  const html = marked.parse(markdownContent.value)
+  // 等待DOM更新后设置图片监听器
+  nextTick(() => {
+    setupImageListeners()
+  })
+  return html
 })
 
 const handleMarkdownReady = (content) => {
@@ -99,6 +163,43 @@ const handleMarkdownReady = (content) => {
     console.warn('Markdown中没有找到图片引用')
   }
   markdownContent.value = content
+  
+  // 等待DOM更新后，为图片添加事件监听
+  nextTick(() => {
+    setupImageListeners()
+  })
+}
+
+const setupImageListeners = () => {
+  if (!markdownWrapperRef.value) return
+  
+  const images = markdownWrapperRef.value.querySelectorAll('img')
+  console.log(`找到 ${images.length} 个图片元素`)
+  
+  images.forEach((img, index) => {
+    console.log(`图片 ${index + 1}: src=${img.src}`)
+    
+    // 添加加载成功事件
+    img.addEventListener('load', () => {
+      console.log(`✅ 图片加载成功: ${img.src}`)
+      img.style.border = 'none'
+    })
+    
+    // 添加加载失败事件
+    img.addEventListener('error', (e) => {
+      console.error(`❌ 图片加载失败: ${img.src}`, e)
+      img.style.border = '2px solid red'
+      img.style.backgroundColor = '#ffebee'
+      if (!img.alt.includes('加载失败')) {
+        img.alt = `图片加载失败: ${img.src}`
+      }
+    })
+    
+    // 检查图片是否已经加载（可能缓存了）
+    if (img.complete && img.naturalHeight !== 0) {
+      console.log(`图片已缓存: ${img.src}`)
+    }
+  })
 }
 </script>
 
