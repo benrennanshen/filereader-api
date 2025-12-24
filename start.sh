@@ -20,18 +20,18 @@ warn() { printf "\033[1;33m[WARN]\033[0m %s\n" "$*"; }
 err()  { printf "\033[1;31m[ERR ]\033[0m %s\n" "$*"; }
 
 ensure_venv() {
-  if [[ -f "$ACTIVATE" ]]; then
+  if [ -f "$ACTIVATE" ]; then
     info "虚拟环境已存在：$VENV_DIR"
   else
     info "未找到虚拟环境，正在创建：$VENV_DIR"
     $PYTHON -m venv "$VENV_DIR" || { err "创建虚拟环境失败"; exit 1; }
-  }
+  fi
   # shellcheck disable=SC1090
-  source "$ACTIVATE" || { err "激活虚拟环境失败"; exit 1; }
+  . "$ACTIVATE" || { err "激活虚拟环境失败"; exit 1; }
 }
 
 install_deps() {
-  if [[ ! -x "$PIP_BIN" ]]; then
+  if [ ! -x "$PIP_BIN" ]; then
     warn "未找到 $PIP_BIN，使用全局 pip"
     PIP_BIN="pip"
   fi
@@ -49,12 +49,12 @@ kill_port() {
     # netstat 兼容
     pids=$(netstat -tunlp 2>/dev/null | awk -v port=":$target_port" '$4 ~ port {gsub("/.*","",$7); print $7}' || true)
   fi
-  if [[ -n "$pids" ]]; then
+  if [ -n "$pids" ]; then
     info "发现占用端口 $target_port 的进程：$pids，正在终止..."
     kill -9 $pids >/dev/null 2>&1 || warn "终止进程失败：$pids"
   else
     info "未检测到占用端口 $target_port 的进程"
-  }
+  fi
 }
 
 start_server() {
