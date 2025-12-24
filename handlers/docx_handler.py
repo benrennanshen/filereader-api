@@ -208,7 +208,10 @@ class DocxToMarkdownHandler:
                         if rel_path in path_map:
                             replaced += 1
                             final_url = path_map[rel_path]
-                            logger.info(f"图片路径匹配成功（绝对路径）: {image_path} -> {final_url}")
+                            # 从 URL 中提取存储路径用于日志显示（相对于 STORAGE_ROOT）
+                            url_path = final_url.replace(self._storage_url_prefix, "").lstrip("/")
+                            storage_path = str(storage_root / url_path) if url_path else str(storage_root)
+                            logger.info(f"图片路径匹配成功: 临时路径={image_path} -> 存储路径={storage_path}, URL={final_url}")
                             return f"![{alt_text}]({final_url})"
             except (ValueError, TypeError):
                 pass
