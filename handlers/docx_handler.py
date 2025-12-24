@@ -4,18 +4,41 @@ import base64
 import logging
 import os
 import re
+import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pypandoc
 
 logger = logging.getLogger(__name__)
 
 
+def _get_bool(env_key: str, default: bool) -> bool:
+    val = os.getenv(env_key)
+    if val is None:
+        return default
+    return val.lower() in {"1", "true", "yes", "y", "on"}
+
+
 class DocxToMarkdownHandler:
     """将 DOCX 文档转换为 Markdown 文本的处理类，使用 pandoc 进行转换。"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        storage_root: Path,
+        storage_url_prefix: str,
+        subdir_by_date: bool = True,
+        keep_original_name: bool = False,
+        inline_image_base64: bool = False,
+    ) -> None:
+        self._storage_root = storage_root
+        self._storage_url_prefix = storage_url_prefix.rstrip("/")
+        self._subdir_by_date = subdir_by_date
+        self._keep_original_name = keep_original_name
+        self._inline_image_base64 = inline_image_base64
+
         # 检查pandoc是否可用
         try:
             pypandoc.get_pandoc_version()
@@ -34,7 +57,8 @@ class DocxToMarkdownHandler:
             docx_bytes: DOCX文件的字节内容
             
         Returns:
-            转换后的Markdown文本，图片以base64格式嵌入
+            转换后的Markdown文本。默认：图片存储到仓库并以 URL 引用；如配置
+            INLINE_IMAGE_BASE64=True，则回退为内联 base64。
         """
         if not isinstance(docx_bytes, (bytes, bytearray)):
             raise TypeError("docx_bytes must be bytes")
@@ -56,10 +80,17 @@ class DocxToMarkdownHandler:
                     tmp_docx_path, tmp_media_dir
                 )
                 
-                # 将图片转换为base64并替换
-                markdown_text = self._convert_images_to_base64(
-                    markdown_text, tmp_media_dir
-                )
+                # 根据配置决定图片处理策略
+                if self._inline_image_base64:
+                    markdown_text = self._convert_images_to_base64(
+                        markdown_text, tmp_media_dir
+                    )
+                else:
+                    markdown_text = self._convert_images_to_urls(
+                        markdown_text,
+                        tmp_media_dir,
+                        self._storage_root,
+                    )
                 
                 logger.info("DOCX转换完成")
                 return markdown_text.strip()
@@ -105,6 +136,110 @@ class DocxToMarkdownHandler:
         except Exception as exc:
             logger.exception(f"Pandoc转换失败: {exc}")
             raise ValueError(f"Failed to convert DOCX with pandoc: {exc}") from exc
+
+    def _convert_images_to_urls(
+        self, markdown_text: str, media_dir: str, storage_root: Path
+    ) -> str:
+        """
+        将 markdown 中的图片路径替换为可访问的 URL，并把图片迁移到存储仓库。
+        """
+        image_pattern = re.compile(
+            r'!\[([^\]]*)\]\(([^)]+)\)|<img[^>]+src=["\']([^"\']+)["\']',
+            re.IGNORECASE
+        )
+
+        # 先迁移文件，生成路径映射
+        path_map = self._store_media_files(media_dir, storage_root)
+        if not path_map:
+            return markdown_text
+
+        replaced = 0
+
+        def replace_image(match: re.Match) -> str:
+            nonlocal replaced
+            if match.group(2):
+                alt_text = match.group(1) or ""
+                image_path = match.group(2)
+            else:
+                alt_text = ""
+                image_path = match.group(3)
+
+            if not image_path or image_path.startswith(("data:", "http://", "https://")):
+                return match.group(0)
+
+            normalized = image_path.lstrip("./\\")
+            normalized = normalized.replace("\\", "/")
+            basename = Path(normalized).name
+            for key in (normalized, basename):
+                if key in path_map:
+                    replaced += 1
+                    return f"![{alt_text}]({path_map[key]})"
+
+            logger.warning(f"图片路径未找到映射，保留原路径: {image_path}")
+            return match.group(0)
+
+        result = image_pattern.sub(replace_image, markdown_text)
+        if replaced:
+            logger.info(f"已将 {replaced} 张图片替换为 URL 引用")
+        else:
+            logger.info("未找到可替换的图片路径")
+        return result
+
+    def _store_media_files(self, media_dir: str, storage_root: Path) -> dict[str, str]:
+        """
+        将 pandoc 提取的媒体文件迁移到存储目录，并生成路径映射表。
+        返回: {相对路径/文件名: url}
+        """
+        path_map: dict[str, str] = {}
+        media_path = Path(media_dir)
+        if not media_path.exists():
+            logger.warning(f"媒体目录不存在: {media_dir}")
+            return path_map
+
+        date_subdir = datetime.now().strftime("%Y/%m/%d") if self._subdir_by_date else ""
+
+        for root, _dirs, files in os.walk(media_dir):
+            for fname in files:
+                src_path = Path(root) / fname
+                rel_path = src_path.relative_to(media_path).as_posix()
+
+                target_dir = Path(storage_root)
+                if date_subdir:
+                    target_dir = target_dir / Path(date_subdir)
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+                suffix = src_path.suffix.lower()
+                if self._keep_original_name:
+                    dest_name = fname
+                    candidate = target_dir / dest_name
+                    if candidate.exists():
+                        dest_name = f"{Path(fname).stem}-{uuid4().hex[:8]}{suffix}"
+                else:
+                    dest_name = f"{uuid4().hex}{suffix}"
+
+                dest_path = target_dir / dest_name
+                try:
+                    shutil.move(str(src_path), dest_path)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"移动图片失败 {src_path}: {exc}")
+                    continue
+
+                # 生成对外 URL
+                url_parts = [self._storage_url_prefix]
+                if date_subdir:
+                    url_parts.append(date_subdir.replace("\\", "/"))
+                url_parts.append(dest_name)
+                url = "/".join(part.strip("/") for part in url_parts if part)
+
+                path_map[rel_path] = url
+                path_map[fname] = url
+
+        if path_map:
+            logger.info(f"已迁移 {len(path_map)} 个媒体文件到 {storage_root}")
+        else:
+            logger.warning(f"未在媒体目录中找到文件: {media_dir}")
+
+        return path_map
 
     def _convert_images_to_base64(
         self, markdown_text: str, media_dir: str

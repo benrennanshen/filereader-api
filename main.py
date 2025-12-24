@@ -3,9 +3,12 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, Query, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 from handlers.docx_handler import DocxToMarkdownHandler
 from handlers.excel_handler import ExcelToMarkdownHandler
@@ -23,11 +26,32 @@ logger = logging.getLogger(__name__)
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
 
+def _get_bool(env_key: str, default: bool) -> bool:
+    val = os.getenv(env_key)
+    if val is None:
+        return default
+    return val.lower() in {"1", "true", "yes", "y", "on"}
+
+
+STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", "/data/filereader/storage")).resolve()
+STORAGE_URL_PREFIX = os.getenv("STORAGE_URL_PREFIX", "http://localhost:8002/static").rstrip("/")
+SUBDIR_BY_DATE = _get_bool("SUBDIR_BY_DATE", True)
+KEEP_ORIGINAL_NAME = _get_bool("KEEP_ORIGINAL_NAME", False)
+INLINE_IMAGE_BASE64 = _get_bool("INLINE_IMAGE_BASE64", False)
+
 app = FastAPI(
     title="FileReader API",
     description="Convert uploaded files to Markdown.",
     root_path=ROOT_PATH,
 )
+
+# 挂载静态目录，暴露解析后存储的图片/附件
+try:
+    STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(STORAGE_ROOT)), name="static")
+    logger.info(f"静态目录已挂载: /static -> {STORAGE_ROOT}")
+except Exception as exc:  # noqa: BLE001
+    logger.exception(f"挂载静态目录失败: {exc}")
 
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
 LARGE_FILE_THRESHOLD = 50 * 1024 * 1024  # 50MB，超过此大小使用线程池
@@ -37,7 +61,13 @@ EXCEL_EXTENSIONS = {"xls", "xlsx"}
 PDF_EXTENSIONS = {"pdf"}
 
 html_handler = HtmlToMarkdownHandler()
-docx_handler = DocxToMarkdownHandler()
+docx_handler = DocxToMarkdownHandler(
+    storage_root=STORAGE_ROOT,
+    storage_url_prefix=STORAGE_URL_PREFIX,
+    subdir_by_date=SUBDIR_BY_DATE,
+    keep_original_name=KEEP_ORIGINAL_NAME,
+    inline_image_base64=INLINE_IMAGE_BASE64,
+)
 excel_handler = ExcelToMarkdownHandler()
 pdf_handler = PdfToMarkdownHandler()
 
@@ -169,6 +199,43 @@ async def convert_to_markdown(file: UploadFile = File(...)):
     except Exception as exc:  # noqa: BLE001
         logger.exception(f"文件转换失败: {filename}, 错误: {exc}")
         return build_response(500, "", f"转换失败: {exc}")
+
+
+@app.get(
+    "/download-image",
+    summary="下载存储中的图片",
+    description="基于转换结果中的图片 URL 下载并回传图片文件。",
+)
+async def download_image(image_url: str = Query(..., description="图片的原始 URL 或路径")):
+    """将 Markdown 中的图片 URL 解析为存储路径并返回文件。"""
+    if not image_url:
+        return build_response(400, "", "image_url is required")
+
+    try:
+        parsed = urlparse(image_url)
+        candidate_path = parsed.path if (parsed.scheme or parsed.netloc) else image_url
+
+        storage_prefix_path = urlparse(STORAGE_URL_PREFIX).path.rstrip("/")
+        if storage_prefix_path and candidate_path.startswith(storage_prefix_path):
+            candidate_path = candidate_path[len(storage_prefix_path) :]
+        elif candidate_path.startswith("/static"):
+            candidate_path = candidate_path[len("/static") :]
+
+        candidate_path = candidate_path.lstrip("/\\")
+        file_path = (STORAGE_ROOT / candidate_path).resolve()
+
+        if not str(file_path).startswith(str(STORAGE_ROOT)):
+            logger.warning(f"非法的图片路径: {file_path}")
+            return build_response(400, "", "Invalid image path")
+
+        if not file_path.exists() or not file_path.is_file():
+            logger.warning(f"图片不存在: {file_path}")
+            return build_response(404, "", "Image not found")
+
+        return FileResponse(file_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(f"下载图片失败: {exc}")
+        return build_response(500, "", f"下载图片失败: {exc}")
 
 
 @app.post(

@@ -37,10 +37,33 @@ import { marked } from 'marked'
 import FileUpload from './components/FileUpload.vue'
 
 const markdownContent = ref('')
+const IMAGE_DOWNLOAD_API = '/api/download-image'
+
+const escapeHtml = (value = '') =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+
+const renderer = new marked.Renderer()
+renderer.image = ({ href = '', title, text }) => {
+  if (!href) return text || ''
+
+  const isDataUri = href.startsWith('data:')
+  const src = isDataUri ? href : `${IMAGE_DOWNLOAD_API}?image_url=${encodeURIComponent(href)}`
+  const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
+  const altAttr = ` alt="${escapeHtml(text || '')}"`
+
+  return `<img src="${src}"${altAttr}${titleAttr} />`
+}
+
+marked.use({ renderer })
 
 const renderedMarkdown = computed(() => {
   if (!markdownContent.value) return ''
-  return marked(markdownContent.value)
+  return marked.parse(markdownContent.value)
 })
 
 const handleMarkdownReady = (content) => {
