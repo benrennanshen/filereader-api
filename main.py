@@ -1,5 +1,7 @@
 import os
 import asyncio
+import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 from fastapi import FastAPI, File, UploadFile
@@ -10,6 +12,14 @@ from handlers.excel_handler import ExcelToMarkdownHandler
 from handlers.html_handler import HtmlToMarkdownHandler
 from handlers.pdf_handler import PdfToMarkdownHandler
 
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
 
 ROOT_PATH = os.getenv("ROOT_PATH", "")
 
@@ -19,7 +29,8 @@ app = FastAPI(
     root_path=ROOT_PATH,
 )
 
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
+LARGE_FILE_THRESHOLD = 50 * 1024 * 1024  # 50MB，超过此大小使用线程池
 HTML_EXTENSIONS = {"html", "htm"}
 TEXT_EXTENSIONS = {"txt"}
 EXCEL_EXTENSIONS = {"xls", "xlsx"}
@@ -29,6 +40,9 @@ html_handler = HtmlToMarkdownHandler()
 docx_handler = DocxToMarkdownHandler(html_handler=html_handler)
 excel_handler = ExcelToMarkdownHandler()
 pdf_handler = PdfToMarkdownHandler()
+
+# 创建线程池用于CPU密集型任务（大文件转换）
+executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="convert")
 
 
 def build_response(http_code: int, data, message: str) -> JSONResponse:
@@ -43,9 +57,49 @@ def build_response(http_code: int, data, message: str) -> JSONResponse:
     )
 
 
+async def _convert_file_content(raw_content: bytes, ext: str, filename: str = "") -> str:
+    """统一的文件转换函数，根据文件大小自动选择同步或异步处理。"""
+    file_size = len(raw_content)
+    file_size_mb = file_size / (1024 * 1024)
+    is_large_file = file_size > LARGE_FILE_THRESHOLD
+    
+    logger.info(f"开始转换文件: {filename}, 类型: {ext}, 大小: {file_size_mb:.2f}MB")
+    
+    # 对于大文件的DOCX转换，使用线程池避免阻塞事件循环
+    if ext == "docx" and is_large_file:
+        logger.info(f"大文件检测，使用线程池异步处理: {filename} ({file_size_mb:.2f}MB)")
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(executor, docx_handler.convert, raw_content)
+        logger.info(f"文件转换完成: {filename}")
+        return result
+    
+    # 其他情况使用同步处理
+    if ext in HTML_EXTENSIONS:
+        logger.info(f"转换HTML文件: {filename}")
+        return _convert_html_bytes(raw_content)
+    elif ext == "docx":
+        logger.info(f"转换DOCX文件: {filename}")
+        result = docx_handler.convert(raw_content)
+        logger.info(f"DOCX转换完成: {filename}")
+        return result
+    elif ext in TEXT_EXTENSIONS:
+        logger.info(f"转换TXT文件: {filename}")
+        return _convert_text_bytes(raw_content)
+    elif ext in EXCEL_EXTENSIONS:
+        logger.info(f"转换Excel文件: {filename}")
+        return excel_handler.convert(raw_content, ext)
+    elif ext in PDF_EXTENSIONS:
+        logger.info(f"转换PDF文件: {filename}")
+        return pdf_handler.convert(raw_content)
+    else:
+        logger.error(f"不支持的文件类型: {ext or 'unknown'}, 文件: {filename}")
+        raise ValueError(f"Unsupported file type: {ext or 'unknown'}")
+
+
 async def convert_single_file_to_markdown(file: UploadFile) -> str:
     """转换单个文件到 Markdown，返回转换结果字符串。如果转换失败，返回错误信息。"""
     filename = file.filename or ""
+    logger.info(f"批量处理 - 开始转换文件: {filename}")
 
     # 简单根据扩展名判断类型
     ext = ""
@@ -55,27 +109,22 @@ async def convert_single_file_to_markdown(file: UploadFile) -> str:
     try:
         raw_content = await file.read()
         if not raw_content:
+            logger.warning(f"批量处理 - 文件为空: {filename}")
             return f"文件 {filename} 为空"
 
         if len(raw_content) > MAX_FILE_SIZE:
-            return f"文件 {filename} 超过大小限制 (50MB)"
+            logger.warning(f"批量处理 - 文件超过大小限制: {filename}")
+            return f"文件 {filename} 超过大小限制 (200MB)"
 
-        if ext in HTML_EXTENSIONS:
-            markdown_text = _convert_html_bytes(raw_content)
-        elif ext == "docx":
-            markdown_text = docx_handler.convert(raw_content)
-        elif ext in TEXT_EXTENSIONS:
-            markdown_text = _convert_text_bytes(raw_content)
-        elif ext in EXCEL_EXTENSIONS:
-            markdown_text = excel_handler.convert(raw_content, ext)
-        elif ext in PDF_EXTENSIONS:
-            markdown_text = pdf_handler.convert(raw_content)
-        else:
-            return f"文件 {filename} 类型不支持: {ext or 'unknown'}"
-
+        markdown_text = await _convert_file_content(raw_content, ext, filename)
+        logger.info(f"批量处理 - 文件转换成功: {filename}")
         return markdown_text
 
+    except ValueError as exc:
+        logger.error(f"批量处理 - 文件类型不支持: {filename}, 错误: {exc}")
+        return f"文件 {filename} 类型不支持: {exc}"
     except Exception as exc:  # noqa: BLE001
+        logger.exception(f"批量处理 - 文件转换失败: {filename}, 错误: {exc}")
         return f"文件 {filename} 转换失败: {exc}"
 
 
@@ -85,13 +134,15 @@ async def convert_single_file_to_markdown(file: UploadFile) -> str:
     description=(
         "将上传的文件转换为 Markdown 文本。\n\n"
         "- 支持格式：`html` / `htm`、`txt`、`docx`、`xls` / `xlsx`、`pdf`（扫描件会自动 OCR）\n"
-        "- 文件大小：统一限制为 50MB，超出会返回 400\n"
+        "- 文件大小：统一限制为 200MB，超出会返回 400\n"
+        "- 大文件优化：超过 50MB 的文件会自动使用异步处理，避免阻塞\n"
         "- 返回字段：`data` 为 Markdown 字符串，`message` 表示状态"
     ),
 )
 async def convert_to_markdown(file: UploadFile = File(...)):
     """接受上传文件并将其内容转换为 Markdown。"""
     filename = file.filename or ""
+    logger.info(f"收到文件上传请求: {filename}")
 
     # 简单根据扩展名判断类型
     ext = ""
@@ -101,28 +152,22 @@ async def convert_to_markdown(file: UploadFile = File(...)):
     try:
         raw_content = await file.read()
         if not raw_content:
+            logger.warning(f"文件为空: {filename}")
             return build_response(400, "", "Empty file")
 
         if len(raw_content) > MAX_FILE_SIZE:
-            return build_response(400, "", "File is too large (limit 50MB)")
+            logger.warning(f"文件超过大小限制: {filename}, 大小: {len(raw_content) / (1024*1024):.2f}MB")
+            return build_response(400, "", "File is too large (limit 200MB)")
 
-        if ext in HTML_EXTENSIONS:
-            markdown_text = _convert_html_bytes(raw_content)
-        elif ext == "docx":
-            markdown_text = docx_handler.convert(raw_content)
-        elif ext in TEXT_EXTENSIONS:
-            markdown_text = _convert_text_bytes(raw_content)
-        elif ext in EXCEL_EXTENSIONS:
-            markdown_text = excel_handler.convert(raw_content, ext)
-        elif ext in PDF_EXTENSIONS:
-            markdown_text = pdf_handler.convert(raw_content)
-        else:
-            return build_response(400, "", f"Unsupported file type: {ext or 'unknown'}")
-
+        markdown_text = await _convert_file_content(raw_content, ext, filename)
+        logger.info(f"文件转换成功: {filename}")
         return build_response(200, markdown_text, "success")
 
+    except ValueError as exc:
+        logger.error(f"不支持的文件类型: {filename}, 错误: {exc}")
+        return build_response(400, "", f"Unsupported file type: {exc}")
     except Exception as exc:  # noqa: BLE001
-        # 实际项目中这里建议增加日志记录
+        logger.exception(f"文件转换失败: {filename}, 错误: {exc}")
         return build_response(500, "", f"转换失败: {exc}")
 
 
@@ -132,7 +177,7 @@ async def convert_to_markdown(file: UploadFile = File(...)):
     description=(
         "将上传的多个文件批量转换为 Markdown 文本数组。\n\n"
         "- 支持格式：`html` / `htm`、`txt`、`docx`、`xls` / `xlsx`、`pdf`（扫描件会自动 OCR）\n"
-        "- 文件大小：每个文件限制为 50MB\n"
+        "- 文件大小：每个文件限制为 200MB\n"
         "- 处理方式：并行处理多个文件以提高效率\n"
         "- 返回字段：`data` 为 Markdown 字符串数组（按上传顺序），`message` 表示处理状态"
     ),
@@ -140,17 +185,20 @@ async def convert_to_markdown(file: UploadFile = File(...)):
 async def convert_multiple_to_markdown(files: List[UploadFile] = File(...)):
     """接受多个上传文件并将其内容批量转换为 Markdown 数组。"""
     if not files:
+        logger.warning("批量转换 - 没有上传文件")
         return build_response(400, [], "没有上传文件")
 
+    logger.info(f"批量转换 - 收到 {len(files)} 个文件")
     try:
         # 使用异步任务并行处理多个文件转换
         tasks = [convert_single_file_to_markdown(file) for file in files]
         results = await asyncio.gather(*tasks)
 
+        logger.info(f"批量转换 - 成功处理 {len(files)} 个文件")
         return build_response(200, results, f"成功处理 {len(files)} 个文件")
 
     except Exception as exc:  # noqa: BLE001
-        # 实际项目中这里建议增加日志记录
+        logger.exception(f"批量转换失败: {exc}")
         return build_response(500, [], f"批量转换失败: {exc}")
 
 
