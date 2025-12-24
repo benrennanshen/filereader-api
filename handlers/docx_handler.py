@@ -79,6 +79,8 @@ class DocxToMarkdownHandler:
                 markdown_text = self._convert_with_pandoc(
                     tmp_docx_path, tmp_media_dir
                 )
+                # 去除 pandoc 生成的尺寸属性，避免阻塞图片替换
+                markdown_text = self._strip_image_size_attributes(markdown_text)
                 
                 # 根据配置决定图片处理策略
                 if self._inline_image_base64:
@@ -136,6 +138,14 @@ class DocxToMarkdownHandler:
         except Exception as exc:
             logger.exception(f"Pandoc转换失败: {exc}")
             raise ValueError(f"Failed to convert DOCX with pandoc: {exc}") from exc
+
+    @staticmethod
+    def _strip_image_size_attributes(markdown_text: str) -> str:
+        """
+        去除 pandoc 转换后附在图片后的尺寸属性块 {width="..."}，避免影响后续替换。
+        """
+        pattern = re.compile(r'(!\[[^\]]*\]\([^)]+\))\s*\{[^}]*\}')
+        return pattern.sub(r"\1", markdown_text)
 
     def _convert_images_to_urls(
         self, markdown_text: str, media_dir: str, storage_root: Path
