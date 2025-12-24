@@ -19,6 +19,19 @@ info() { printf "\033[1;32m[INFO]\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m[WARN]\033[0m %s\n" "$*"; }
 err()  { printf "\033[1;31m[ERR ]\033[0m %s\n" "$*"; }
 
+load_env() {
+  local env_file="${ENV_FILE:-.env}"
+  if [ -f "$env_file" ]; then
+    info "加载环境变量：$env_file"
+    set -a
+    # shellcheck disable=SC1090
+    . "$env_file"
+    set +a
+  else
+    warn "未找到环境文件：$env_file（跳过加载）"
+  fi
+}
+
 ensure_venv() {
   if [ -f "$ACTIVATE" ]; then
     info "虚拟环境已存在：$VENV_DIR"
@@ -84,6 +97,7 @@ EOF
 
 main() {
   local cmd="${1:-help}"
+  load_env
   case "$cmd" in
     start)
       info "检查并关闭旧进程..."
