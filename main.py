@@ -24,17 +24,57 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _load_env_file(env_file: str = ".env") -> dict[str, str]:
+    """尝试从 .env 文件加载环境变量（如果环境变量未设置）。"""
+    env_vars = {}
+    env_path = Path(env_file)
+    if env_path.exists() and env_path.is_file():
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        # 只在环境变量未设置时才使用 .env 的值
+                        if key and value and os.getenv(key) is None:
+                            env_vars[key] = value
+            if env_vars:
+                logger.debug(f"从 {env_file} 加载了 {len(env_vars)} 个环境变量")
+        except Exception as e:
+            logger.warning(f"读取 {env_file} 失败: {e}")
+    return env_vars
+
+
+def _get_env(key: str, default: str = "") -> str:
+    """获取环境变量，如果未设置则尝试从 .env 文件读取。"""
+    val = os.getenv(key)
+    if val is not None:
+        return val
+    
+    # 尝试从 .env 文件读取
+    env_vars = _load_env_file()
+    return env_vars.get(key, default)
+
+
 ROOT_PATH = os.getenv("ROOT_PATH", "")
 
 def _get_bool(env_key: str, default: bool) -> bool:
     val = os.getenv(env_key)
     if val is None:
+        # 尝试从 .env 文件读取
+        env_vars = _load_env_file()
+        val = env_vars.get(env_key)
+    if val is None:
         return default
     return val.lower() in {"1", "true", "yes", "y", "on"}
 
 
-STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", "/data/filereader/storage")).resolve()
-STORAGE_URL_PREFIX = os.getenv("STORAGE_URL_PREFIX", "http://localhost:8002/static").rstrip("/")
+STORAGE_ROOT = Path(_get_env("STORAGE_ROOT", "/data/filereader/storage")).resolve()
+STORAGE_URL_PREFIX = _get_env("STORAGE_URL_PREFIX", "http://192.168.1.10:8002/static").rstrip("/")
 SUBDIR_BY_DATE = _get_bool("SUBDIR_BY_DATE", True)
 KEEP_ORIGINAL_NAME = _get_bool("KEEP_ORIGINAL_NAME", False)
 INLINE_IMAGE_BASE64 = _get_bool("INLINE_IMAGE_BASE64", False)
