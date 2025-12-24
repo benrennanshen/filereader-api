@@ -37,7 +37,7 @@ EXCEL_EXTENSIONS = {"xls", "xlsx"}
 PDF_EXTENSIONS = {"pdf"}
 
 html_handler = HtmlToMarkdownHandler()
-docx_handler = DocxToMarkdownHandler(html_handler=html_handler)
+docx_handler = DocxToMarkdownHandler()
 excel_handler = ExcelToMarkdownHandler()
 pdf_handler = PdfToMarkdownHandler()
 

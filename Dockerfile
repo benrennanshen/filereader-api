@@ -5,13 +5,14 @@ RUN echo "Types: deb\nURIs: https://mirrors.aliyun.com/debian\nSuites: bookworm 
 
 WORKDIR /app
 
-# 安装系统依赖：curl（健康检查）、poppler（pdf2image）、tesseract（OCR）
+# 安装系统依赖：curl（健康检查）、poppler（pdf2image）、tesseract（OCR）、pandoc（docx转换）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     poppler-utils \
     tesseract-ocr \
     tesseract-ocr-chi-sim \
     tesseract-ocr-eng \
+    pandoc \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
