@@ -133,7 +133,14 @@ class DocxToMarkdownHandler:
                 extra_args=extra_args,
             )
             
-            logger.debug(f"Pandoc转换完成，Markdown长度: {len(markdown_text)}")
+            # 检查转换后的 markdown 中是否包含图片
+            image_count = len(re.findall(r'!\[([^\]]*)\]\(([^)]+)\)', markdown_text))
+            logger.info(f"Pandoc转换完成，Markdown长度: {len(markdown_text)}，包含 {image_count} 个图片引用")
+            if image_count > 0:
+                # 提取前几个图片路径作为示例
+                sample_images = re.findall(r'!\[([^\]]*)\]\(([^)]+)\)', markdown_text)[:3]
+                logger.debug(f"图片路径示例: {sample_images}")
+            
             return markdown_text
         except Exception as exc:
             logger.exception(f"Pandoc转换失败: {exc}")
@@ -161,7 +168,15 @@ class DocxToMarkdownHandler:
         # 先迁移文件，生成路径映射
         path_map = self._store_media_files(media_dir, storage_root)
         if not path_map:
+            logger.warning("未找到任何媒体文件，无法生成图片 URL")
             return markdown_text
+
+        # 记录 path_map 内容用于调试
+        logger.debug(f"图片路径映射表: {path_map}")
+
+        # 查找所有图片引用
+        all_images = image_pattern.findall(markdown_text)
+        logger.info(f"在 Markdown 中找到 {len(all_images)} 个图片引用")
 
         replaced = 0
 
@@ -175,24 +190,30 @@ class DocxToMarkdownHandler:
                 image_path = match.group(3)
 
             if not image_path or image_path.startswith(("data:", "http://", "https://")):
+                logger.debug(f"跳过已处理的图片路径: {image_path}")
                 return match.group(0)
 
             normalized = image_path.lstrip("./\\")
             normalized = normalized.replace("\\", "/")
             basename = Path(normalized).name
+            
+            logger.debug(f"尝试匹配图片路径: 原始={image_path}, 标准化={normalized}, 文件名={basename}")
+            
             for key in (normalized, basename):
                 if key in path_map:
                     replaced += 1
-                    return f"![{alt_text}]({path_map[key]})"
+                    final_url = path_map[key]
+                    logger.info(f"图片路径匹配成功: {image_path} -> {final_url}")
+                    return f"![{alt_text}]({final_url})"
 
-            logger.warning(f"图片路径未找到映射，保留原路径: {image_path}")
+            logger.warning(f"图片路径未找到映射，保留原路径: {image_path} (可用映射键: {list(path_map.keys())})")
             return match.group(0)
 
         result = image_pattern.sub(replace_image, markdown_text)
         if replaced:
             logger.info(f"已将 {replaced} 张图片替换为 URL 引用")
         else:
-            logger.info("未找到可替换的图片路径")
+            logger.warning("未找到可替换的图片路径，请检查图片路径匹配逻辑")
         return result
 
     def _store_media_files(self, media_dir: str, storage_root: Path) -> dict[str, str]:
@@ -243,9 +264,11 @@ class DocxToMarkdownHandler:
 
                 path_map[rel_path] = url
                 path_map[fname] = url
+                logger.debug(f"图片文件已迁移: {src_path} -> {dest_path}, URL: {url}")
 
         if path_map:
-            logger.info(f"已迁移 {len(path_map)} 个媒体文件到 {storage_root}")
+            logger.info(f"已迁移 {len(set(path_map.values()))} 个媒体文件到 {storage_root}，生成 {len(path_map)} 个路径映射")
+            logger.debug(f"生成的图片 URL 示例: {list(path_map.values())[0] if path_map.values() else '无'}")
         else:
             logger.warning(f"未在媒体目录中找到文件: {media_dir}")
 
