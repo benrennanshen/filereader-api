@@ -38,7 +38,7 @@ import FileUpload from './components/FileUpload.vue'
 
 const markdownContent = ref('')
 const markdownWrapperRef = ref(null)
-const IMAGE_DOWNLOAD_API = '/api/download-image'
+const IMAGE_DOWNLOAD_API = './api/download-image'
 
 const escapeHtml = (value = '') =>
   value
@@ -75,14 +75,23 @@ renderer.image = (href = '', title = '', text = '') => {
   if (isDataUri) {
     src = href
   } else if (href.startsWith('http://') || href.startsWith('https://')) {
-    // 如果是完整的URL，检查路径是否是 /static/...，如果是则转换为代理路径
+    // 如果是完整的URL，检查是否是同源的 /static/ 路径
     try {
       const url = new URL(href)
-      // 如果路径以 /static/ 开头，转换为代理路径（避免CORS问题）
+      // 如果路径以 /static/ 开头，且是同源（开发环境可能需要代理，生产环境直接使用）
       if (url.pathname.startsWith('/static/')) {
-        // 转换为 /api/static/... 格式，通过 vite 代理访问
-        src = `/api${url.pathname}${url.search}`
-        console.log(`转换图片URL为代理路径: ${href} -> ${src}`)
+        // 开发环境：使用代理路径；生产环境：直接使用（前后端同源）
+        // 通过检查是否在开发环境来决定
+        const isDev = import.meta.env.DEV
+        if (isDev) {
+          // 开发环境：通过 Vite 代理访问
+          src = `/api${url.pathname}${url.search}`
+          console.log(`开发环境：转换图片URL为代理路径: ${href} -> ${src}`)
+        } else {
+          // 生产环境：直接使用（前后端同源）
+          src = url.pathname + url.search
+          console.log(`生产环境：直接使用图片路径: ${href} -> ${src}`)
+        }
       } else {
         // 其他外部URL，直接使用（可能需要CORS支持）
         src = href
@@ -93,9 +102,17 @@ renderer.image = (href = '', title = '', text = '') => {
       src = href
     }
   } else if (href.startsWith('/static/')) {
-    // 相对路径以 /static/ 开头，也转换为代理路径
-    src = `/api${href}`
-    console.log(`转换相对路径为代理路径: ${href} -> ${src}`)
+    // 相对路径以 /static/ 开头
+    const isDev = import.meta.env.DEV
+    if (isDev) {
+      // 开发环境：通过 Vite 代理访问
+      src = `/api${href}`
+      console.log(`开发环境：转换相对路径为代理路径: ${href} -> ${src}`)
+    } else {
+      // 生产环境：直接使用（前后端同源）
+      src = href
+      console.log(`生产环境：直接使用相对路径: ${href}`)
+    }
   } else {
     // 其他相对路径或其他格式，通过代理下载
     src = `${IMAGE_DOWNLOAD_API}?image_url=${encodeURIComponent(href)}`

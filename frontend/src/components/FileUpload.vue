@@ -61,7 +61,7 @@ const customUpload = async (options) => {
     const formData = new FormData()
     formData.append('file', file)
     
-    const response = await axios.post('/api/convert-to-md', formData, {
+    const response = await axios.post('./api/convert-to-md', formData, {
       headers: {
         'Content-Type': 'multipart/form-data'
       }

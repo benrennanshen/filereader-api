@@ -1,11 +1,66 @@
+# Python
 .venv/
+venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.py[cod]
+*$py.class
+*.so
+.Python
 .pytest_cache/
 .mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+# 排除前端构建目录，确保在容器内使用最新配置重新构建
+frontend/dist/
+
+# 日志和临时文件
 logs/
-start.bat
+*.log
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# IDE
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 启动脚本（不需要在容器中）
+start.bat
+start.sh
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# 文档（可选，如果需要可以保留）
+# *.md
+
+# 环境变量文件（敏感信息）
+.env
+.env.local
+.env.*.local
+
+# 存储目录（运行时挂载）
+storage/
+
+# 测试文件
+tests/
+test_*.py
+*_test.py
 

@@ -5,9 +5,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, Query, UploadFile
+from fastapi import FastAPI, File, Query, UploadFile, Request, APIRouter
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 from pathlib import Path
 
 from handlers.docx_handler import DocxToMarkdownHandler
@@ -84,6 +85,9 @@ app = FastAPI(
     description="Convert uploaded files to Markdown.",
     root_path=ROOT_PATH,
 )
+
+# 创建 API 路由器，所有 API 路由使用 /api 前缀
+api_router = APIRouter(prefix="/api")
 
 # 挂载静态目录，暴露解析后存储的图片/附件
 try:
@@ -198,7 +202,7 @@ async def convert_single_file_to_markdown(file: UploadFile) -> str:
         return f"文件 {filename} 转换失败: {exc}"
 
 
-@app.post(
+@api_router.post(
     "/convert-to-md",
     summary="文档转 Markdown",
     description=(
@@ -241,7 +245,7 @@ async def convert_to_markdown(file: UploadFile = File(...)):
         return build_response(500, "", f"转换失败: {exc}")
 
 
-@app.get(
+@api_router.get(
     "/download-image",
     summary="下载存储中的图片",
     description="基于转换结果中的图片 URL 下载并回传图片文件。",
@@ -278,7 +282,7 @@ async def download_image(image_url: str = Query(..., description="图片的原�
         return build_response(500, "", f"下载图片失败: {exc}")
 
 
-@app.post(
+@api_router.post(
     "/convert-multiple-to-md",
     summary="批量文档转 Markdown",
     description=(
@@ -325,6 +329,73 @@ def _convert_text_bytes(raw_content: bytes) -> str:
     except UnicodeDecodeError:
         text = raw_content.decode("utf-8", errors="ignore")
     return text.strip()
+
+
+# 注册 API 路由器
+app.include_router(api_router)
+
+# 前端静态文件目录（构建后的 dist 目录）
+FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
+FRONTEND_DIST = FRONTEND_DIST.resolve()
+
+# 挂载前端静态文件（必须在所有路由之后，确保 API 路由优先）
+if FRONTEND_DIST.exists() and FRONTEND_DIST.is_dir():
+    try:
+        # 根据 ROOT_PATH 确定前端挂载路径
+        frontend_base = ROOT_PATH.rstrip("/") if ROOT_PATH else ""
+        
+        # 挂载静态资源（JS、CSS、图片等）
+        # 同时挂载到根路径和 ROOT_PATH 路径，以支持不同的部署方式
+        app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="frontend-assets")
+        if frontend_base:
+            # 如果设置了 ROOT_PATH，也挂载到该路径下
+            assets_path = f"{frontend_base}/assets"
+            app.mount(assets_path, StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="frontend-assets-prefixed")
+        logger.info(f"前端静态资源已挂载: /assets" + (f" 和 {frontend_base}/assets" if frontend_base else "") + f" -> {FRONTEND_DIST / 'assets'}")
+        
+        # SPA 路由处理：所有非 API 路径返回 index.html
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def serve_spa(request: Request, full_path: str):
+            """处理 SPA 路由，所有非 API 路径返回 index.html"""
+            # 如果设置了 ROOT_PATH，需要处理带前缀的路径
+            original_path = full_path
+            if frontend_base:
+                base_stripped = frontend_base.lstrip("/")
+                if full_path.startswith(base_stripped + "/") or full_path == base_stripped:
+                    full_path = full_path[len(base_stripped):].lstrip("/")
+            
+            # 排除 API 路径和静态资源路径
+            if full_path.startswith(("api/", "static/", "assets/", "docs", "openapi.json", "redoc")):
+                return JSONResponse(status_code=404, content={"detail": "Not found"})
+            
+            # 排除根路径下的 API 文档路径
+            if full_path in ("docs", "redoc", "openapi.json"):
+                return JSONResponse(status_code=404, content={"detail": "Not found"})
+            
+            # 检查是否是静态文件请求
+            static_file = FRONTEND_DIST / full_path
+            if static_file.exists() and static_file.is_file():
+                return FileResponse(static_file)
+            
+            # 如果请求的是 ROOT_PATH 本身或 ROOT_PATH/index.html，返回 index.html
+            if (frontend_base and (original_path == frontend_base.lstrip("/") or original_path == frontend_base.lstrip("/") + "/index.html")) or \
+               (not frontend_base and (full_path == "" or full_path == "index.html")):
+                index_file = FRONTEND_DIST / "index.html"
+                if index_file.exists():
+                    return FileResponse(index_file)
+            
+            # 其他路径返回 index.html（SPA 路由）
+            index_file = FRONTEND_DIST / "index.html"
+            if index_file.exists():
+                return FileResponse(index_file)
+            
+            return JSONResponse(status_code=404, content={"detail": "Frontend not found"})
+        
+        logger.info(f"前端 SPA 路由已配置: {FRONTEND_DIST}, base path: {frontend_base or '/'}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"挂载前端静态文件失败: {exc}，前端可能未构建")
+else:
+    logger.info(f"前端构建目录不存在: {FRONTEND_DIST}，跳过前端静态文件服务")
 
 
 # 方便直接运行: uvicorn main:app --reload

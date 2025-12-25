@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  filereaderapi:
+    image: filereaderapi:latest
+    expose:
+      - "8002"
+    container_name: filereaderapi
+    restart: always
+    environment:
+      # API根路径（用于反向代理）
+      - ROOT_PATH=${ROOT_PATH:-/filereader-api}
+      # 存储配置
+      - STORAGE_ROOT=${STORAGE_ROOT:-/storage/}
+      - STORAGE_URL_PREFIX=${STORAGE_URL_PREFIX:-http://192.168.1.10:8002/filereaderapi/static}
+      # 存储选项
+      - SUBDIR_BY_DATE=${SUBDIR_BY_DATE:-true}
+      - KEEP_ORIGINAL_NAME=${KEEP_ORIGINAL_NAME:-false}
+      - INLINE_IMAGE_BASE64=${INLINE_IMAGE_BASE64:-false}
+      # Python环境
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+    volumes:
+      # 持久化存储目录（图片、附件等）
+      - ./storage:/storage/
+      # 日志目录（可选）
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - agent-tool-network
+    
+networks:
+  agent-tool-network:
+    external: true
+
