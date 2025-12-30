@@ -406,11 +406,32 @@ async def download_markdown_zip(
         zip_data = zip_buffer.read()
         zip_buffer.close()
 
+        # 处理文件名编码，支持中文等非 ASCII 字符
+        # 使用 RFC 5987 格式：filename*=UTF-8''encoded_filename
+        try:
+            from urllib.parse import quote
+            # 对文件名进行 URL 编码
+            encoded_filename = quote(zip_filename.encode('utf-8'), safe='')
+            content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
+            # 同时提供 ASCII 回退版本（用于兼容旧浏览器）
+            try:
+                ascii_filename = zip_filename.encode('ascii', 'ignore').decode('ascii')
+                if not ascii_filename:
+                    ascii_filename = 'download.zip'
+            except Exception:
+                ascii_filename = 'download.zip'
+            content_disposition += f"; filename=\"{ascii_filename}\""
+        except Exception as e:
+            logger.warning(f"文件名编码处理失败: {e}，使用默认文件名")
+            # 如果编码失败，使用安全的 ASCII 文件名
+            safe_filename = zip_filename.encode('ascii', 'ignore').decode('ascii') or 'download.zip'
+            content_disposition = f"attachment; filename=\"{safe_filename}\""
+
         logger.info(f"ZIP 包生成成功: {zip_filename}, 大小: {len(zip_data) / 1024:.2f}KB")
         return Response(
             content=zip_data,
             media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename={zip_filename}"},
+            headers={"Content-Disposition": content_disposition},
         )
 
     except ValueError as exc:

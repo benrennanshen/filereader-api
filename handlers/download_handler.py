@@ -48,7 +48,8 @@ class MarkdownZipGenerator:
         zip_buffer = BytesIO()
 
         try:
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Python 3.11+ 的 zipfile 默认支持 UTF-8 编码的文件名
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zip_file:
                 # 1. 提取所有图片 URL
                 image_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)', re.IGNORECASE)
                 image_matches = image_pattern.findall(markdown_content)
@@ -159,6 +160,7 @@ class MarkdownZipGenerator:
                     logger.info(f"已添加图片到 ZIP: {file_path} -> {local_path}")
 
                 # 3. 添加更新后的 markdown 文件到 ZIP
+                # 使用 UTF-8 编码确保中文内容正确
                 zip_file.writestr("document.md", updated_markdown.encode('utf-8'))
                 logger.info("已添加 Markdown 文件到 ZIP")
 
