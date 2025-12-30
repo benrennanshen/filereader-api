@@ -70,7 +70,10 @@ const customUpload = async (options) => {
     loading.value = false
     
     if (response.data.httpCode === 200) {
-      emit('markdown-ready', response.data.data)
+      emit('markdown-ready', {
+        content: response.data.data,
+        filename: file.name
+      })
       ElMessage.success('转换成功！')
     } else {
       ElMessage.error(response.data.message || '转换失败')

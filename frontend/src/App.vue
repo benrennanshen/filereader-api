@@ -52,6 +52,7 @@ import axios from 'axios'
 import FileUpload from './components/FileUpload.vue'
 
 const markdownContent = ref('')
+const originalFilename = ref('')
 const markdownWrapperRef = ref(null)
 const downloading = ref(false)
 const IMAGE_DOWNLOAD_API = './api/download-image'
@@ -180,7 +181,11 @@ const renderedMarkdown = computed(() => {
   return html
 })
 
-const handleMarkdownReady = (content) => {
+const handleMarkdownReady = (data) => {
+  // 支持两种格式：直接传字符串（向后兼容）或传对象
+  const content = typeof data === 'string' ? data : data.content
+  const filename = typeof data === 'string' ? '' : (data.filename || '')
+  
   console.log('收到Markdown内容，长度:', content?.length)
   // 检查markdown中是否包含图片
   const imageMatches = content.match(/!\[([^\]]*)\]\(([^)]+)\)/g)
@@ -196,6 +201,7 @@ const handleMarkdownReady = (content) => {
     console.warn('Markdown中没有找到图片引用')
   }
   markdownContent.value = content
+  originalFilename.value = filename
   
   // 等待DOM更新后，为图片添加事件监听
   nextTick(() => {
@@ -243,43 +249,73 @@ const downloadMarkdownZip = async () => {
   
   downloading.value = true
   try {
+    // 构建请求体，包含 markdown 内容和文件名
+    const requestBody = {
+      markdown_content: markdownContent.value,
+      filename: originalFilename.value || ''
+    }
+    
     const response = await axios.post(
       './api/download-markdown-zip',
-      markdownContent.value,
+      requestBody,
       {
         headers: {
-          'Content-Type': 'text/plain; charset=utf-8'
+          'Content-Type': 'application/json'
         },
         responseType: 'blob'
       }
     )
     
-    // 创建下载链接
-    const blob = new Blob([response.data], { type: 'application/zip' })
+    // response.data 已经是 Blob 对象（因为 responseType: 'blob'）
+    const blob = response.data instanceof Blob 
+      ? response.data 
+      : new Blob([response.data], { type: 'application/zip' })
+    
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
     
-    // 从响应头获取文件名，如果没有则使用默认名称
-    const contentDisposition = response.headers['content-disposition']
+    // 从响应头获取文件名（响应头名称可能是小写）
+    const contentDisposition = response.headers['content-disposition'] || 
+                                response.headers['Content-Disposition']
     let filename = 'markdown_with_images.zip'
     if (contentDisposition) {
-      const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/)
-      if (filenameMatch) {
-        filename = filenameMatch[1]
+      // 支持 filename="xxx" 和 filename=xxx 两种格式
+      const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/)
+      if (filenameMatch && filenameMatch[1]) {
+        filename = filenameMatch[1].replace(/['"]/g, '')
       }
     }
     
     link.download = filename
     document.body.appendChild(link)
     link.click()
-    document.body.removeChild(link)
-    window.URL.revokeObjectURL(url)
+    
+    // 延迟清理，确保下载开始
+    setTimeout(() => {
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+    }, 100)
     
     ElMessage.success('下载成功！')
   } catch (error) {
     console.error('下载失败:', error)
-    ElMessage.error('下载失败，请稍后重试')
+    let errorMessage = '下载失败，请稍后重试'
+    if (error.response) {
+      // 如果响应是 blob 但实际上是错误信息，尝试读取
+      if (error.response.data instanceof Blob) {
+        try {
+          const text = await error.response.data.text()
+          const errorData = JSON.parse(text)
+          errorMessage = errorData.message || errorMessage
+        } catch (e) {
+          // 如果解析失败，使用默认错误信息
+        }
+      } else if (error.response.data && error.response.data.message) {
+        errorMessage = error.response.data.message
+      }
+    }
+    ElMessage.error(errorMessage)
   } finally {
     downloading.value = false
   }

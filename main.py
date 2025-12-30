@@ -6,9 +6,10 @@ from typing import List
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Query, UploadFile, Request, APIRouter, Body
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
+from io import BytesIO
 from pathlib import Path
 
 from handlers.docx_handler import DocxToMarkdownHandler
@@ -368,33 +369,48 @@ async def convert_multiple_to_markdown(files: List[UploadFile] = File(...)):
     description=(
         "根据提供的 Markdown 内容，提取其中的图片 URL，"
         "收集所有图片文件，生成包含 Markdown 文件和图片文件夹的 ZIP 包。\n\n"
-        "- 请求体：纯文本 Markdown 内容\n"
+        "- 请求体：JSON 对象，包含 `markdown_content` 和可选的 `filename`\n"
         "- 返回：ZIP 文件流，包含 `document.md` 和 `images/` 文件夹\n"
-        "- 图片路径：ZIP 中的 Markdown 文件使用相对路径引用图片"
+        "- 图片路径：ZIP 中的 Markdown 文件使用相对路径引用图片\n"
+        "- 文件名：如果提供了原始文件名，ZIP 包名称将使用文件名+时间戳"
     ),
 )
-async def download_markdown_zip(markdown_content: str = Body(..., description="Markdown 内容")):
+async def download_markdown_zip(
+    request_data: dict = Body(..., description="包含 markdown_content 和 filename 的 JSON 对象")
+):
     """生成包含 Markdown 文件和关联图片的 ZIP 包"""
+    # 支持两种格式：直接传字符串（向后兼容）或传 JSON 对象
+    if isinstance(request_data, str):
+        markdown_content = request_data
+        filename = ""
+    else:
+        markdown_content = request_data.get("markdown_content", "")
+        filename = request_data.get("filename", "")
+
     if not markdown_content:
         logger.warning("下载 ZIP - Markdown 内容为空")
         return build_response(400, "", "Markdown content is required")
 
     try:
-        logger.info("开始生成 Markdown ZIP 包")
+        logger.info(f"开始生成 Markdown ZIP 包，原始文件名: {filename or '未提供'}")
         # 使用线程池执行 ZIP 生成（避免阻塞事件循环）
         loop = asyncio.get_event_loop()
         zip_buffer = await loop.run_in_executor(
             executor, zip_generator.generate_zip, markdown_content
         )
 
-        # 获取文件名
-        filename = zip_generator.get_zip_filename()
+        # 获取文件名（使用原始文件名+时间戳）
+        zip_filename = zip_generator.get_zip_filename(filename)
 
-        logger.info(f"ZIP 包生成成功: {filename}")
-        return StreamingResponse(
-            zip_buffer,
+        # 读取 BytesIO 的所有内容
+        zip_data = zip_buffer.read()
+        zip_buffer.close()
+
+        logger.info(f"ZIP 包生成成功: {zip_filename}, 大小: {len(zip_data) / 1024:.2f}KB")
+        return Response(
+            content=zip_data,
             media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
+            headers={"Content-Disposition": f"attachment; filename={zip_filename}"},
         )
 
     except ValueError as exc:

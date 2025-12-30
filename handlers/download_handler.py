@@ -244,13 +244,28 @@ class MarkdownZipGenerator:
                 return new_filename
             counter += 1
 
-    def get_zip_filename(self) -> str:
+    def get_zip_filename(self, original_filename: str = "") -> str:
         """
         生成 ZIP 文件名。
+
+        Args:
+            original_filename: 原始文件名（可选）
 
         Returns:
             ZIP 文件名
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return f"markdown_with_images_{timestamp}.zip"
+        
+        if original_filename:
+            # 提取文件名（不含扩展名）
+            file_path = Path(original_filename)
+            name_without_ext = file_path.stem
+            # 清理文件名，移除可能的不合法字符
+            safe_name = re.sub(r'[<>:"/\\|?*]', '_', name_without_ext)
+            # 限制长度，避免文件名过长
+            if len(safe_name) > 50:
+                safe_name = safe_name[:50]
+            return f"{safe_name}_{timestamp}.zip"
+        else:
+            return f"markdown_with_images_{timestamp}.zip"
 
