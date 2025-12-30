@@ -393,14 +393,22 @@ async def download_markdown_zip(
 
     try:
         logger.info(f"开始生成 Markdown ZIP 包，原始文件名: {filename or '未提供'}")
+        
+        # 生成 ZIP 包内的 md 文件名（使用原始文件名）
+        md_filename = filename if filename else "document.md"
+        if md_filename and not md_filename.lower().endswith('.md'):
+            # 如果原始文件名没有 .md 扩展名，添加它
+            from pathlib import Path
+            md_filename = f"{Path(md_filename).stem}.md"
+        
         # 使用线程池执行 ZIP 生成（避免阻塞事件循环）
         loop = asyncio.get_event_loop()
         zip_buffer = await loop.run_in_executor(
-            executor, zip_generator.generate_zip, markdown_content
+            executor, zip_generator.generate_zip, markdown_content, md_filename
         )
 
-        # 获取文件名（使用原始文件名+时间戳）
-        zip_filename = zip_generator.get_zip_filename(filename)
+        # 获取 ZIP 包文件名（仅使用时间戳）
+        zip_filename = zip_generator.get_zip_filename()
 
         # 读取 BytesIO 的所有内容
         zip_data = zip_buffer.read()

@@ -27,12 +27,13 @@ class MarkdownZipGenerator:
         self._storage_root = storage_root
         self._storage_url_prefix = storage_url_prefix.rstrip("/")
 
-    def generate_zip(self, markdown_content: str) -> BytesIO:
+    def generate_zip(self, markdown_content: str, md_filename: str = "document.md") -> BytesIO:
         """
         生成包含 Markdown 文件和图片的 ZIP 包。
 
         Args:
             markdown_content: Markdown 内容
+            md_filename: ZIP 包内的 Markdown 文件名（默认：document.md）
 
         Returns:
             ZIP 文件的 BytesIO 对象
@@ -43,6 +44,10 @@ class MarkdownZipGenerator:
         """
         if not markdown_content:
             raise ValueError("Markdown content is required")
+        
+        # 确保文件名以 .md 结尾
+        if not md_filename.lower().endswith('.md'):
+            md_filename = f"{md_filename}.md"
 
         # 创建 ZIP 缓冲区
         zip_buffer = BytesIO()
@@ -159,10 +164,11 @@ class MarkdownZipGenerator:
 
                     logger.info(f"已添加图片到 ZIP: {file_path} -> {local_path}")
 
-                # 3. 添加更新后的 markdown 文件到 ZIP
+                # 3. 格式化并添加更新后的 markdown 文件到 ZIP
+                formatted_markdown = self._format_markdown(updated_markdown, md_filename)
                 # 使用 UTF-8 编码确保中文内容正确
-                zip_file.writestr("document.md", updated_markdown.encode('utf-8'))
-                logger.info("已添加 Markdown 文件到 ZIP")
+                zip_file.writestr(md_filename, formatted_markdown.encode('utf-8'))
+                logger.info(f"已添加 Markdown 文件到 ZIP: {md_filename}")
 
             # 重置缓冲区位置
             zip_buffer.seek(0)
@@ -246,28 +252,51 @@ class MarkdownZipGenerator:
                 return new_filename
             counter += 1
 
-    def get_zip_filename(self, original_filename: str = "") -> str:
+    def _format_markdown(self, markdown_content: str, filename: str) -> str:
         """
-        生成 ZIP 文件名。
+        格式化 Markdown 内容，使其更易读。
 
         Args:
-            original_filename: 原始文件名（可选）
+            markdown_content: 原始 Markdown 内容
+            filename: 文件名
+
+        Returns:
+            格式化后的 Markdown 内容
+        """
+        # 添加文件头信息
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        header = f"""---
+title: {Path(filename).stem}
+created: {timestamp}
+---
+
+"""
+        
+        # 清理内容：去除开头和结尾的空白
+        content = markdown_content.strip()
+        
+        # 统一换行符为 \n
+        content = content.replace('\r\n', '\n').replace('\r', '\n')
+        
+        # 确保段落之间有适当的空行（最多两个空行）
+        content = re.sub(r'\n{3,}', '\n\n', content)
+        
+        # 组合文件头和内容
+        formatted = header + content
+        
+        # 确保文件以换行符结尾
+        if not formatted.endswith('\n'):
+            formatted += '\n'
+        
+        return formatted
+
+    def get_zip_filename(self) -> str:
+        """
+        生成 ZIP 文件名（仅使用时间戳）。
 
         Returns:
             ZIP 文件名
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        if original_filename:
-            # 提取文件名（不含扩展名）
-            file_path = Path(original_filename)
-            name_without_ext = file_path.stem
-            # 清理文件名，移除可能的不合法字符
-            safe_name = re.sub(r'[<>:"/\\|?*]', '_', name_without_ext)
-            # 限制长度，避免文件名过长
-            if len(safe_name) > 50:
-                safe_name = safe_name[:50]
-            return f"{safe_name}_{timestamp}.zip"
-        else:
-            return f"markdown_with_images_{timestamp}.zip"
+        return f"markdown_{timestamp}.zip"
 
