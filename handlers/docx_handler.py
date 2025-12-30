@@ -12,6 +12,8 @@ from uuid import uuid4
 
 import pypandoc
 
+from handlers.utils import strip_image_size_attributes, strip_style_attributes
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,9 +82,9 @@ class DocxToMarkdownHandler:
                     tmp_docx_path, tmp_media_dir
                 )
                 # 去除 pandoc 生成的尺寸属性，避免阻塞图片替换
-                markdown_text = self._strip_image_size_attributes(markdown_text)
+                markdown_text = strip_image_size_attributes(markdown_text)
                 # 去除 pandoc 生成的其他样式属性（如下划线、颜色等）
-                markdown_text = self._strip_style_attributes(markdown_text)
+                markdown_text = strip_style_attributes(markdown_text)
                 
                 # 根据配置决定图片处理策略
                 if self._inline_image_base64:
@@ -119,20 +121,28 @@ class DocxToMarkdownHandler:
         # 创建临时的 Lua 过滤器，将表格转换为 HTML
         lua_filter_content = '''function Table(tbl)
     local html = '<table>\\n'
-    if tbl.head and #tbl.head.rows > 0 then
-        html = html .. '<thead>\\n<tr>\\n'
-        for _, cell in ipairs(tbl.head.rows[1].cells) do
-            html = html .. '<th>' .. pandoc.utils.stringify(cell) .. '</th>\\n'
+    -- 处理表头
+    if tbl.head and tbl.head.rows and #tbl.head.rows > 0 then
+        html = html .. '<thead>\\n'
+        for _, row in ipairs(tbl.head.rows) do
+            html = html .. '<tr>\\n'
+            for _, cell in ipairs(row.cells) do
+                html = html .. '<th>' .. pandoc.utils.stringify(cell) .. '</th>\\n'
+            end
+            html = html .. '</tr>\\n'
         end
-        html = html .. '</tr>\\n</thead>\\n'
+        html = html .. '</thead>\\n'
     end
+    -- 处理表体
     html = html .. '<tbody>\\n'
-    for _, row in ipairs(tbl.bodies[1].body) do
-        html = html .. '<tr>\\n'
-        for _, cell in ipairs(row.cells) do
-            html = html .. '<td>' .. pandoc.utils.stringify(cell) .. '</td>\\n'
+    if tbl.body then
+        for _, row in ipairs(tbl.body) do
+            html = html .. '<tr>\\n'
+            for _, cell in ipairs(row.cells) do
+                html = html .. '<td>' .. pandoc.utils.stringify(cell) .. '</td>\\n'
+            end
+            html = html .. '</tr>\\n'
         end
-        html = html .. '</tr>\\n'
     end
     html = html .. '</tbody>\\n</table>'
     return pandoc.RawBlock('html', html)
@@ -185,45 +195,6 @@ end
                 os.unlink(lua_filter_path)
             except Exception as e:
                 logger.warning(f"清理临时 Lua 过滤器文件失败: {e}")
-
-    @staticmethod
-    def _strip_image_size_attributes(markdown_text: str) -> str:
-        """
-        去除 pandoc 转换后附在图片后的尺寸属性块 {width="..."}，避免影响后续替换。
-        """
-        pattern = re.compile(r'(!\[[^\]]*\]\([^)]+\))\s*\{[^}]*\}')
-        return pattern.sub(r"\1", markdown_text)
-    
-    @staticmethod
-    def _strip_style_attributes(markdown_text: str) -> str:
-        """
-        去除 pandoc 转换后生成的样式属性块，如 {.underline}、{.bold}、{color="red"} 等。
-        这些属性在表格、文本等元素中可能出现，但 markdown 渲染器通常不支持。
-        
-        注意：保留表格对齐属性 {.left}、{.right}、{.center}，因为这些对表格有用。
-        """
-        def replace_style(match):
-            content = match.group(0)
-            # 如果是表格对齐属性，保留
-            if re.match(r'\{\.(left|right|center)\}', content):
-                return content
-            # 如果是表格列对齐属性（在表格定义行中），也保留
-            # 例如：|:---|:---:|---:|
-            if re.match(r'\{:\.(left|right|center)\}', content):
-                return content
-            # 其他样式属性，去除
-            return ''
-        
-        # 匹配所有样式属性块 {xxx}，但通过回调函数决定是否保留
-        result = re.sub(r'\{[^}]*\}', replace_style, markdown_text)
-        
-        # 清理可能留下的多余空格（但保留换行）
-        # 将多个连续空格替换为单个空格，但保留换行符
-        lines = result.split('\n')
-        cleaned_lines = [re.sub(r'[ \t]+', ' ', line) for line in lines]
-        result = '\n'.join(cleaned_lines)
-        
-        return result
 
     def _convert_images_to_urls(
         self, markdown_text: str, media_dir: str, storage_root: Path
