@@ -12,7 +12,9 @@ services:
       - ROOT_PATH=${ROOT_PATH:-/filereader-api}
       # 存储配置
       - STORAGE_ROOT=${STORAGE_ROOT:-/storage/}
-      - STORAGE_URL_PREFIX=${STORAGE_URL_PREFIX:-http://192.168.1.10:8002/filereaderapi/static}
+      # STORAGE_URL_PREFIX 为空时会自动根据 ROOT_PATH 生成相对路径
+      # 例如：ROOT_PATH=/filereader-api 时，会自动使用 /filereader-api/static
+      - STORAGE_URL_PREFIX=${STORAGE_URL_PREFIX:-}
       # 存储选项
       - SUBDIR_BY_DATE=${SUBDIR_BY_DATE:-true}
       - KEEP_ORIGINAL_NAME=${KEEP_ORIGINAL_NAME:-false}

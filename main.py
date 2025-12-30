@@ -75,7 +75,18 @@ def _get_bool(env_key: str, default: bool) -> bool:
 
 
 STORAGE_ROOT = Path(_get_env("STORAGE_ROOT", "/data/filereader/storage")).resolve()
-STORAGE_URL_PREFIX = _get_env("STORAGE_URL_PREFIX", "http://192.168.1.10:8002/static").rstrip("/")
+# 如果 STORAGE_URL_PREFIX 未设置，且 ROOT_PATH 存在，则使用相对路径
+_default_storage_url_prefix = _get_env("STORAGE_URL_PREFIX", "")
+if not _default_storage_url_prefix:
+    # 如果 ROOT_PATH 存在，构建相对路径
+    if ROOT_PATH:
+        _default_storage_url_prefix = f"{ROOT_PATH.rstrip('/')}/static"
+    else:
+        _default_storage_url_prefix = "/static"
+# 确保相对路径以 / 开头（如果不是绝对URL）
+if not _default_storage_url_prefix.startswith(("http://", "https://")) and not _default_storage_url_prefix.startswith("/"):
+    _default_storage_url_prefix = "/" + _default_storage_url_prefix
+STORAGE_URL_PREFIX = _default_storage_url_prefix.rstrip("/")
 SUBDIR_BY_DATE = _get_bool("SUBDIR_BY_DATE", True)
 KEEP_ORIGINAL_NAME = _get_bool("KEEP_ORIGINAL_NAME", False)
 INLINE_IMAGE_BASE64 = _get_bool("INLINE_IMAGE_BASE64", False)
@@ -259,17 +270,48 @@ async def download_image(image_url: str = Query(..., description="图片的原�
         parsed = urlparse(image_url)
         candidate_path = parsed.path if (parsed.scheme or parsed.netloc) else image_url
 
-        storage_prefix_path = urlparse(STORAGE_URL_PREFIX).path.rstrip("/")
-        if storage_prefix_path and candidate_path.startswith(storage_prefix_path):
-            candidate_path = candidate_path[len(storage_prefix_path) :]
-        elif candidate_path.startswith("/static"):
-            candidate_path = candidate_path[len("/static") :]
+        # 标准化路径：统一使用正斜杠，并确保有前导斜杠用于匹配
+        candidate_path = candidate_path.replace("\\", "/")
+        candidate_path_normalized = candidate_path if candidate_path.startswith("/") else "/" + candidate_path
 
+        # 处理 STORAGE_URL_PREFIX：如果是相对路径，直接使用；如果是绝对URL，提取路径部分
+        if STORAGE_URL_PREFIX.startswith(("http://", "https://")):
+            storage_prefix_path = urlparse(STORAGE_URL_PREFIX).path.rstrip("/")
+        else:
+            # 相对路径，直接使用
+            storage_prefix_path = STORAGE_URL_PREFIX.rstrip("/")
+        
+        # 标准化storage_prefix_path，确保有前导斜杠
+        if storage_prefix_path and not storage_prefix_path.startswith("/"):
+            storage_prefix_path = "/" + storage_prefix_path
+        
+        # 尝试匹配并去掉前缀（支持有/无前导斜杠的情况）
+        if storage_prefix_path:
+            # 尝试匹配带前导斜杠的路径
+            if candidate_path_normalized.startswith(storage_prefix_path):
+                candidate_path = candidate_path_normalized[len(storage_prefix_path):]
+            # 尝试匹配不带前导斜杠的路径（去掉storage_prefix_path的前导斜杠）
+            elif storage_prefix_path.startswith("/") and candidate_path.startswith(storage_prefix_path[1:]):
+                candidate_path = candidate_path[len(storage_prefix_path[1:]):]
+            # 尝试匹配原始candidate_path（可能没有前导斜杠）
+            elif candidate_path.startswith(storage_prefix_path.lstrip("/")):
+                candidate_path = candidate_path[len(storage_prefix_path.lstrip("/")):]
+        
+        # 如果还有/static前缀，也去掉
+        if candidate_path.startswith("/static"):
+            candidate_path = candidate_path[len("/static"):]
+        elif candidate_path.startswith("static/"):
+            candidate_path = candidate_path[len("static/"):]
+
+        # 清理路径：去掉前导的斜杠和反斜杠
         candidate_path = candidate_path.lstrip("/\\")
+        
+        # 构建文件路径
         file_path = (STORAGE_ROOT / candidate_path).resolve()
 
-        if not str(file_path).startswith(str(STORAGE_ROOT)):
-            logger.warning(f"非法的图片路径: {file_path}")
+        # 安全检查：确保文件路径在STORAGE_ROOT内
+        if not str(file_path).startswith(str(STORAGE_ROOT.resolve())):
+            logger.warning(f"非法的图片路径: {file_path} (不在存储根目录 {STORAGE_ROOT} 内)")
             return build_response(400, "", "Invalid image path")
 
         if not file_path.exists() or not file_path.is_file():
