@@ -5,7 +5,8 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig(({ mode }) => {
     // 加载环境变量
     const env = loadEnv(mode, process.cwd(), '')
-    // 从环境变量读取后端地址，默认使用 192.168.1.10:8002（与之前保持一致）
+    // 从环境变量读取后端地址，默认使用 192.168.1.10:8002（远程服务器）
+    // 可以通过创建 .env 文件设置 VITE_API_BASE_URL 来覆盖
     const API_BASE_URL = env.VITE_API_BASE_URL || 'http://192.168.1.10:8002'
     // 使用相对路径，这样无论部署在什么路径下都能正常工作
     // 如果确实需要绝对路径，可以通过环境变量 VITE_BASE_PATH 覆盖
@@ -21,7 +22,8 @@ export default defineConfig(({ mode }) => {
                 '/api': {
                     target: API_BASE_URL,
                     changeOrigin: true,
-                    rewrite: (path) => path.replace(/^\/api/, '')
+                    // 保留 /api 前缀，因为后端路由使用 /api 前缀
+                    // 不设置 rewrite，让路径原样转发到后端
                 },
                 // 添加 /static 代理，确保静态文件可以通过代理访问
                 '/static': {
