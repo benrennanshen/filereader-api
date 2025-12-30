@@ -107,7 +107,7 @@ class DocxToMarkdownHandler:
 
     def _convert_with_pandoc(self, docx_path: str, media_dir: str) -> str:
         """
-        使用pandoc将docx转换为markdown。
+        使用pandoc将docx转换为markdown，表格使用HTML格式。
         
         Args:
             docx_path: docx文件路径
@@ -116,15 +116,47 @@ class DocxToMarkdownHandler:
         Returns:
             转换后的markdown文本
         """
+        # 创建临时的 Lua 过滤器，将表格转换为 HTML
+        lua_filter_content = '''function Table(tbl)
+    local html = '<table>\\n'
+    if tbl.head and #tbl.head.rows > 0 then
+        html = html .. '<thead>\\n<tr>\\n'
+        for _, cell in ipairs(tbl.head.rows[1].cells) do
+            html = html .. '<th>' .. pandoc.utils.stringify(cell) .. '</th>\\n'
+        end
+        html = html .. '</tr>\\n</thead>\\n'
+    end
+    html = html .. '<tbody>\\n'
+    for _, row in ipairs(tbl.bodies[1].body) do
+        html = html .. '<tr>\\n'
+        for _, cell in ipairs(row.cells) do
+            html = html .. '<td>' .. pandoc.utils.stringify(cell) .. '</td>\\n'
+        end
+        html = html .. '</tr>\\n'
+    end
+    html = html .. '</tbody>\\n</table>'
+    return pandoc.RawBlock('html', html)
+end
+'''
+        
+        # 创建临时 Lua 过滤器文件
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.lua', delete=False, encoding='utf-8') as lua_file:
+            lua_file.write(lua_filter_content)
+            lua_filter_path = lua_file.name
+        
         try:
             # pandoc转换参数
             # --extract-media: 提取图片到指定目录
             # --wrap=none: 不自动换行
             # --markdown-headings=atx: 使用ATX风格标题（#）
+            # --to=markdown+raw_html: 允许在 Markdown 中嵌入 HTML
+            # --lua-filter: 使用 Lua 过滤器将表格转换为 HTML
             extra_args = [
                 "--extract-media=" + media_dir,
                 "--wrap=none",
                 "--markdown-headings=atx",
+                "--to=markdown+raw_html",
+                "--lua-filter=" + lua_filter_path,
             ]
             
             # 转换为markdown
@@ -147,6 +179,12 @@ class DocxToMarkdownHandler:
         except Exception as exc:
             logger.exception(f"Pandoc转换失败: {exc}")
             raise ValueError(f"Failed to convert DOCX with pandoc: {exc}") from exc
+        finally:
+            # 清理临时 Lua 过滤器文件
+            try:
+                os.unlink(lua_filter_path)
+            except Exception as e:
+                logger.warning(f"清理临时 Lua 过滤器文件失败: {e}")
 
     @staticmethod
     def _strip_image_size_attributes(markdown_text: str) -> str:
