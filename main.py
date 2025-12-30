@@ -5,8 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, Query, UploadFile, Request, APIRouter
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, Query, UploadFile, Request, APIRouter, Body
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pathlib import Path
@@ -15,6 +15,7 @@ from handlers.docx_handler import DocxToMarkdownHandler
 from handlers.excel_handler import ExcelToMarkdownHandler
 from handlers.html_handler import HtmlToMarkdownHandler
 from handlers.pdf_handler import PdfToMarkdownHandler
+from handlers.download_handler import MarkdownZipGenerator
 
 # 配置日志
 logging.basicConfig(
@@ -125,6 +126,12 @@ docx_handler = DocxToMarkdownHandler(
 )
 excel_handler = ExcelToMarkdownHandler()
 pdf_handler = PdfToMarkdownHandler()
+
+# 创建 ZIP 生成器
+zip_generator = MarkdownZipGenerator(
+    storage_root=STORAGE_ROOT,
+    storage_url_prefix=STORAGE_URL_PREFIX,
+)
 
 # 创建线程池用于CPU密集型任务（大文件转换）
 executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="convert")
@@ -353,6 +360,49 @@ async def convert_multiple_to_markdown(files: List[UploadFile] = File(...)):
     except Exception as exc:  # noqa: BLE001
         logger.exception(f"批量转换失败: {exc}")
         return build_response(500, [], f"批量转换失败: {exc}")
+
+
+@api_router.post(
+    "/download-markdown-zip",
+    summary="下载 Markdown 和图片的 ZIP 包",
+    description=(
+        "根据提供的 Markdown 内容，提取其中的图片 URL，"
+        "收集所有图片文件，生成包含 Markdown 文件和图片文件夹的 ZIP 包。\n\n"
+        "- 请求体：纯文本 Markdown 内容\n"
+        "- 返回：ZIP 文件流，包含 `document.md` 和 `images/` 文件夹\n"
+        "- 图片路径：ZIP 中的 Markdown 文件使用相对路径引用图片"
+    ),
+)
+async def download_markdown_zip(markdown_content: str = Body(..., description="Markdown 内容")):
+    """生成包含 Markdown 文件和关联图片的 ZIP 包"""
+    if not markdown_content:
+        logger.warning("下载 ZIP - Markdown 内容为空")
+        return build_response(400, "", "Markdown content is required")
+
+    try:
+        logger.info("开始生成 Markdown ZIP 包")
+        # 使用线程池执行 ZIP 生成（避免阻塞事件循环）
+        loop = asyncio.get_event_loop()
+        zip_buffer = await loop.run_in_executor(
+            executor, zip_generator.generate_zip, markdown_content
+        )
+
+        # 获取文件名
+        filename = zip_generator.get_zip_filename()
+
+        logger.info(f"ZIP 包生成成功: {filename}")
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    except ValueError as exc:
+        logger.error(f"下载 ZIP - 参数错误: {exc}")
+        return build_response(400, "", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(f"生成 ZIP 包失败: {exc}")
+        return build_response(500, "", f"生成 ZIP 包失败: {exc}")
 
 
 def _convert_html_bytes(raw_content: bytes) -> str:

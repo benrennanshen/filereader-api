@@ -16,8 +16,20 @@
             <template #header>
               <div class="card-header">
                 <span class="card-title">转换结果</span>
-                <el-tag v-if="markdownContent" type="success" size="small">已转换</el-tag>
-                <el-tag v-else type="info" size="small">等待上传</el-tag>
+                <div class="header-actions">
+                  <el-tag v-if="markdownContent" type="success" size="small">已转换</el-tag>
+                  <el-tag v-else type="info" size="small">等待上传</el-tag>
+                  <el-button 
+                    v-if="markdownContent" 
+                    type="primary" 
+                    size="small" 
+                    :icon="Download"
+                    @click="downloadMarkdownZip"
+                    :loading="downloading"
+                  >
+                    下载 md 文件
+                  </el-button>
+                </div>
               </div>
             </template>
             <div v-if="markdownContent" class="markdown-wrapper" ref="markdownWrapperRef">
@@ -34,10 +46,14 @@
 <script setup>
 import { ref, computed, nextTick, watch } from 'vue'
 import { marked } from 'marked'
+import { Download } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import axios from 'axios'
 import FileUpload from './components/FileUpload.vue'
 
 const markdownContent = ref('')
 const markdownWrapperRef = ref(null)
+const downloading = ref(false)
 const IMAGE_DOWNLOAD_API = './api/download-image'
 
 const escapeHtml = (value = '') =>
@@ -218,6 +234,56 @@ const setupImageListeners = () => {
     }
   })
 }
+
+const downloadMarkdownZip = async () => {
+  if (!markdownContent.value) {
+    ElMessage.warning('没有可下载的内容')
+    return
+  }
+  
+  downloading.value = true
+  try {
+    const response = await axios.post(
+      './api/download-markdown-zip',
+      markdownContent.value,
+      {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8'
+        },
+        responseType: 'blob'
+      }
+    )
+    
+    // 创建下载链接
+    const blob = new Blob([response.data], { type: 'application/zip' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    
+    // 从响应头获取文件名，如果没有则使用默认名称
+    const contentDisposition = response.headers['content-disposition']
+    let filename = 'markdown_with_images.zip'
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/)
+      if (filenameMatch) {
+        filename = filenameMatch[1]
+      }
+    }
+    
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    
+    ElMessage.success('下载成功！')
+  } catch (error) {
+    console.error('下载失败:', error)
+    ElMessage.error('下载失败，请稍后重试')
+  } finally {
+    downloading.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -310,6 +376,12 @@ const setupImageListeners = () => {
   font-size: 16px;
   font-weight: 600;
   color: #303133;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .markdown-wrapper {
