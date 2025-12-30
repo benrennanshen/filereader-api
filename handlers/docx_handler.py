@@ -119,27 +119,28 @@ class DocxToMarkdownHandler:
             转换后的markdown文本
         """
         # 创建临时的 Lua 过滤器，将表格转换为 HTML
+        # 使用 to_simple_table 兼容不同版本的 Pandoc
         lua_filter_content = '''function Table(tbl)
+    -- 转换为简单表格格式，兼容不同 Pandoc 版本
+    local simple = pandoc.utils.to_simple_table(tbl)
     local html = '<table>\\n'
+    
     -- 处理表头
-    if tbl.head and tbl.head.rows and #tbl.head.rows > 0 then
-        html = html .. '<thead>\\n'
-        for _, row in ipairs(tbl.head.rows) do
-            html = html .. '<tr>\\n'
-            for _, cell in ipairs(row.cells) do
-                html = html .. '<th>' .. pandoc.utils.stringify(cell) .. '</th>\\n'
-            end
-            html = html .. '</tr>\\n'
+    if simple.headers and #simple.headers > 0 then
+        html = html .. '<thead>\\n<tr>\\n'
+        for i = 1, #simple.headers do
+            html = html .. '<th>' .. pandoc.utils.stringify(simple.headers[i]) .. '</th>\\n'
         end
-        html = html .. '</thead>\\n'
+        html = html .. '</tr>\\n</thead>\\n'
     end
+    
     -- 处理表体
     html = html .. '<tbody>\\n'
-    if tbl.body then
-        for _, row in ipairs(tbl.body) do
+    if simple.rows then
+        for i = 1, #simple.rows do
             html = html .. '<tr>\\n'
-            for _, cell in ipairs(row.cells) do
-                html = html .. '<td>' .. pandoc.utils.stringify(cell) .. '</td>\\n'
+            for j = 1, #simple.rows[i] do
+                html = html .. '<td>' .. pandoc.utils.stringify(simple.rows[i][j]) .. '</td>\\n'
             end
             html = html .. '</tr>\\n'
         end
