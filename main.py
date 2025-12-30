@@ -415,25 +415,24 @@ async def download_markdown_zip(
         zip_buffer.close()
 
         # 处理文件名编码，支持中文等非 ASCII 字符
-        # 使用 RFC 5987 格式：filename*=UTF-8''encoded_filename
+        # 只使用 filename 参数，避免浏览器显示 "UTF-8" 前缀
         try:
-            from urllib.parse import quote
-            # 对文件名进行 URL 编码
-            encoded_filename = quote(zip_filename.encode('utf-8'), safe='')
-            content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
-            # 同时提供 ASCII 回退版本（用于兼容旧浏览器）
+            # 检查文件名是否包含非 ASCII 字符
             try:
-                ascii_filename = zip_filename.encode('ascii', 'ignore').decode('ascii')
-                if not ascii_filename:
-                    ascii_filename = 'download.zip'
-            except Exception:
-                ascii_filename = 'download.zip'
-            content_disposition += f"; filename=\"{ascii_filename}\""
+                zip_filename.encode('ascii')
+                # 文件名只包含 ASCII 字符，直接使用
+                content_disposition = f'attachment; filename="{zip_filename}"'
+            except UnicodeEncodeError:
+                # 文件名包含非 ASCII 字符，使用 URL 编码
+                from urllib.parse import quote
+                # 对文件名进行 URL 编码，只使用 filename 参数（避免显示 UTF-8 前缀）
+                encoded_filename = quote(zip_filename.encode('utf-8'), safe='')
+                content_disposition = f'attachment; filename="{encoded_filename}"'
         except Exception as e:
             logger.warning(f"文件名编码处理失败: {e}，使用默认文件名")
             # 如果编码失败，使用安全的 ASCII 文件名
             safe_filename = zip_filename.encode('ascii', 'ignore').decode('ascii') or 'download.zip'
-            content_disposition = f"attachment; filename=\"{safe_filename}\""
+            content_disposition = f'attachment; filename="{safe_filename}"'
 
         logger.info(f"ZIP 包生成成功: {zip_filename}, 大小: {len(zip_data) / 1024:.2f}KB")
         return Response(
