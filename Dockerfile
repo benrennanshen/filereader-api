@@ -12,8 +12,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 # 安装系统依赖：curl（健康检查）、poppler（pdf2image）、tesseract（OCR）、pandoc（docx转换）
 # 按依赖关系分组安装，优化缓存层
-# 注意：如果网络较慢，可以取消注释下面的阿里云镜像源配置
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 配置国内镜像源（阿里云）加速下载
+RUN sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's|http://security.debian.org|https://mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends \
     # 基础工具
     curl \
     ca-certificates \
@@ -32,10 +34,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /tmp/* \
     && rm -rf /var/tmp/*
-
-# 如果需要使用阿里云镜像源加速（可选，如果官方源较慢可以取消注释）
-# RUN sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources && \
-#     sed -i 's|http://security.debian.org|https://mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list.d/debian.sources
 
 # 验证关键依赖安装
 RUN pandoc --version && \

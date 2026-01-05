@@ -144,11 +144,15 @@ renderer.image = (href = '', title = '', text = '') => {
 }
 
 // 配置 marked，确保正确处理图片和 HTML
-marked.use({ 
+// marked v11 默认保留 HTML 标签，但需要明确配置
+marked.setOptions({
   renderer,
-  // 允许 HTML 标签（包括 img 标签）
+  // 允许 HTML 标签（包括 img 标签和 table 标签）
   breaks: true,
-  gfm: true
+  gfm: true,
+  // 确保 HTML 标签不被转义（marked v11 默认保留 HTML）
+  mangle: false,
+  headerIds: false
 })
 
 const renderedMarkdown = computed(() => {
@@ -173,7 +177,22 @@ const renderedMarkdown = computed(() => {
     })
   }
   
-  const html = marked.parse(markdownContent.value)
+  // 使用 marked 解析 Markdown
+  let html = marked.parse(markdownContent.value)
+  
+  // 确保 HTML 标签（特别是表格标签）不被转义
+  // 如果 HTML 标签被转义了（如 &lt;table&gt;），恢复它们
+  // 这通常发生在生产环境中，marked 可能会转义某些 HTML 标签
+  // 只恢复表格相关的 HTML 标签
+  const tableTags = ['table', 'tbody', 'thead', 'tfoot', 'tr', 'td', 'th', 'caption', 'colgroup', 'col']
+  tableTags.forEach(tag => {
+    // 恢复开始标签和结束标签
+    const openTagRegex = new RegExp(`&lt;${tag}(\\s[^&]*?)?&gt;`, 'gi')
+    const closeTagRegex = new RegExp(`&lt;\\/${tag}&gt;`, 'gi')
+    html = html.replace(openTagRegex, (match) => match.replace(/&lt;/g, '<').replace(/&gt;/g, '>'))
+    html = html.replace(closeTagRegex, `</${tag}>`)
+  })
+  
   // 等待DOM更新后设置图片监听器
   nextTick(() => {
     setupImageListeners()
@@ -461,12 +480,18 @@ const downloadMarkdownZip = async () => {
   border-collapse: collapse;
   width: 100%;
   margin-bottom: 16px;
+  table-layout: auto;
+  max-width: 100%;
 }
 
 .markdown-body :deep(table th),
 .markdown-body :deep(table td) {
   border: 1px solid #dfe2e5;
   padding: 6px 13px;
+  word-wrap: break-word;
+  word-break: break-word;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 
 .markdown-body :deep(table th) {
