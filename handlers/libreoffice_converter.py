@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -14,15 +15,25 @@ logger = logging.getLogger(__name__)
 class LibreOfficeConverter:
     """使用 LibreOffice 将 Office 文件转换为 PDF 的工具类"""
 
-    def __init__(self, timeout: int = 120):
+    def __init__(self, timeout: int = 120, pdf_save_dir: str | Path | None = None):
         """
         初始化转换器
         
         Args:
             timeout: 转换超时时间（秒），默认 120 秒
+            pdf_save_dir: PDF 文件保存目录，如果为 None 则从环境变量读取，默认 /fskj/workspace/filereaderapi/file_parse
         """
         self.timeout = timeout
         self._check_libreoffice_available()
+        
+        # 设置PDF保存目录
+        if pdf_save_dir is None:
+            pdf_save_dir = os.getenv("PDF_SAVE_DIR", "/fskj/workspace/filereaderapi/file_parse")
+        
+        self._pdf_save_dir = Path(pdf_save_dir)
+        # 确保目录存在
+        self._pdf_save_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"PDF 文件保存目录: {self._pdf_save_dir}")
 
     def _check_libreoffice_available(self) -> None:
         """检查 LibreOffice 是否已安装并可用"""
@@ -119,6 +130,10 @@ class LibreOfficeConverter:
 
                 # 验证并记录 PDF 文件详细信息
                 self._log_pdf_info(pdf_bytes, temp_pdf)
+                
+                # 保存PDF文件到指定目录
+                saved_path = self._save_pdf_file(pdf_bytes, temp_pdf)
+                logger.info(f"📁 PDF 文件已保存到: {saved_path}")
 
                 return pdf_bytes
 
@@ -140,6 +155,41 @@ class LibreOfficeConverter:
             except Exception as e:
                 logger.warning(f"清理临时文件失败: {e}")
 
+    def _save_pdf_file(self, pdf_bytes: bytes, original_path: Path) -> Path:
+        """
+        保存PDF文件到指定目录
+        
+        Args:
+            pdf_bytes: PDF 文件的字节内容
+            original_path: 原始临时文件路径（用于获取文件名）
+            
+        Returns:
+            保存后的文件路径
+        """
+        # 使用时间戳和原始文件名生成保存路径
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # 获取原始文件名（不含扩展名）
+        original_name = original_path.stem
+        # 生成新的文件名：时间戳_原文件名.pdf
+        filename = f"{timestamp}_{original_name}.pdf"
+        saved_path = self._pdf_save_dir / filename
+        
+        # 如果文件已存在，添加序号
+        counter = 1
+        while saved_path.exists():
+            filename = f"{timestamp}_{original_name}_{counter}.pdf"
+            saved_path = self._pdf_save_dir / filename
+            counter += 1
+        
+        # 保存文件
+        with open(saved_path, "wb") as f:
+            f.write(pdf_bytes)
+        
+        logger.info(f"  保存路径: {saved_path}")
+        logger.info(f"  保存大小: {len(pdf_bytes) / 1024:.2f} KB")
+        
+        return saved_path
+
     def _log_pdf_info(self, pdf_bytes: bytes, pdf_path: Path) -> None:
         """
         验证并记录 PDF 文件的详细信息
@@ -156,7 +206,7 @@ class LibreOfficeConverter:
             
             logger.info("=" * 60)
             logger.info("📄 PDF 转换成功 - 文件信息:")
-            logger.info(f"  文件路径: {pdf_path}")
+            logger.info(f"  临时文件路径: {pdf_path} (处理完成后将保存到持久化目录)")
             logger.info(f"  文件大小: {pdf_size_kb:.2f} KB ({pdf_size_mb:.4f} MB)")
             logger.info(f"  文件大小(字节): {pdf_size:,} bytes")
             
