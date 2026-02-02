@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from io import BytesIO
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -116,9 +117,8 @@ class LibreOfficeConverter:
                 with open(temp_pdf, "rb") as pdf_file:
                     pdf_bytes = pdf_file.read()
 
-                logger.info(
-                    f"DOCX 转 PDF 成功: {len(pdf_bytes) / 1024:.1f}KB"
-                )
+                # 验证并记录 PDF 文件详细信息
+                self._log_pdf_info(pdf_bytes, temp_pdf)
 
                 return pdf_bytes
 
@@ -139,3 +139,82 @@ class LibreOfficeConverter:
                 os.unlink(tmp_docx_path)
             except Exception as e:
                 logger.warning(f"清理临时文件失败: {e}")
+
+    def _log_pdf_info(self, pdf_bytes: bytes, pdf_path: Path) -> None:
+        """
+        验证并记录 PDF 文件的详细信息
+        
+        Args:
+            pdf_bytes: PDF 文件的字节内容
+            pdf_path: PDF 文件的路径（用于日志显示）
+        """
+        try:
+            # 基本信息
+            pdf_size = len(pdf_bytes)
+            pdf_size_mb = pdf_size / (1024 * 1024)
+            pdf_size_kb = pdf_size / 1024
+            
+            logger.info("=" * 60)
+            logger.info("📄 PDF 转换成功 - 文件信息:")
+            logger.info(f"  文件路径: {pdf_path}")
+            logger.info(f"  文件大小: {pdf_size_kb:.2f} KB ({pdf_size_mb:.4f} MB)")
+            logger.info(f"  文件大小(字节): {pdf_size:,} bytes")
+            
+            # 验证 PDF 文件格式（检查 PDF 文件头）
+            if pdf_bytes[:4] == b"%PDF":
+                pdf_version = pdf_bytes[4:8].decode("ascii", errors="ignore").strip()
+                logger.info(f"  PDF 版本: {pdf_version}")
+            else:
+                logger.warning("  ⚠️ PDF 文件头验证失败，可能不是有效的 PDF 文件")
+            
+            # 使用 pdfplumber 获取更详细的信息
+            try:
+                import pdfplumber
+                with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+                    page_count = len(pdf.pages)
+                    logger.info(f"  页数: {page_count} 页")
+                    
+                    # 获取第一页的信息作为示例
+                    if page_count > 0:
+                        first_page = pdf.pages[0]
+                        width = first_page.width
+                        height = first_page.height
+                        logger.info(f"  页面尺寸: {width:.2f} x {height:.2f} 点")
+                        
+                        # 尝试提取第一页的文本长度（用于验证内容）
+                        try:
+                            text = first_page.extract_text()
+                            if text:
+                                text_length = len(text.strip())
+                                logger.info(f"  第一页文本长度: {text_length} 字符")
+                            else:
+                                logger.info("  第一页文本: 无文本内容（可能是扫描件或图片）")
+                        except Exception as e:
+                            logger.debug(f"  提取第一页文本时出错: {e}")
+                    
+                    # 记录元数据（如果有）
+                    if pdf.metadata:
+                        logger.info("  元数据:")
+                        for key, value in pdf.metadata.items():
+                            if value:
+                                logger.info(f"    {key}: {value}")
+                    
+            except ImportError:
+                logger.warning("  pdfplumber 未安装，无法获取详细页数信息")
+            except Exception as e:
+                logger.warning(f"  获取 PDF 详细信息时出错: {e}")
+                # 即使出错，也尝试简单验证 PDF 是否可读
+                try:
+                    # 简单检查：查找 PDF 中的页面对象
+                    page_count_estimate = pdf_bytes.count(b"/Type/Page")
+                    if page_count_estimate > 0:
+                        logger.info(f"  估算页数: {page_count_estimate} 页（基于 /Type/Page 对象）")
+                except Exception:
+                    pass
+            
+            logger.info("=" * 60)
+            
+        except Exception as e:
+            logger.warning(f"记录 PDF 信息时出错: {e}")
+            # 即使出错，也记录基本信息
+            logger.info(f"DOCX 转 PDF 成功: {len(pdf_bytes) / 1024:.1f}KB")
