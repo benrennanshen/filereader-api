@@ -150,7 +150,43 @@ def build_response(http_code: int, data, message: str) -> JSONResponse:
     )
 
 
-async def _convert_file_content(raw_content: bytes, ext: str, filename: str = "") -> str:
+async def _convert_docx_via_pdf(raw_content: bytes, filename: str) -> str:
+    """通过 PDF 转换方式处理 DOCX 文件"""
+    from handlers.libreoffice_converter import LibreOfficeConverter
+    from handlers.pdf_handler import PdfToMarkdownHandler
+    
+    try:
+        # 使用 LibreOffice 转换为 PDF
+        converter = LibreOfficeConverter()
+        pdf_bytes = converter.convert_docx_to_pdf(raw_content)
+        
+        # 使用 PDF 解析器解析
+        pdf_handler = PdfToMarkdownHandler()
+        
+        # 对于大文件，使用线程池
+        if len(raw_content) > LARGE_FILE_THRESHOLD:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(executor, pdf_handler.convert, pdf_bytes)
+        else:
+            result = pdf_handler.convert(pdf_bytes)
+        
+        return result
+    except RuntimeError as e:
+        # 转换失败，直接抛出异常，让上层处理
+        logger.error(f"DOCX 转 PDF 失败: {filename}, 错误: {e}")
+        raise RuntimeError(f"DOCX 转 PDF 转换失败: {e}") from e
+    except Exception as e:
+        # 其他异常也直接抛出
+        logger.error(f"DOCX 转 PDF 处理失败: {filename}, 错误: {e}")
+        raise RuntimeError(f"DOCX 转 PDF 处理失败: {e}") from e
+
+
+async def _convert_file_content(
+    raw_content: bytes, 
+    ext: str, 
+    filename: str = "",
+    convert_to_pdf: bool = True
+) -> str:
     """统一的文件转换函数，根据文件大小自动选择同步或异步处理。"""
     file_size = len(raw_content)
     file_size_mb = file_size / (1024 * 1024)
@@ -162,7 +198,12 @@ async def _convert_file_content(raw_content: bytes, ext: str, filename: str = ""
     if ext == "docx" and is_large_file:
         logger.info(f"大文件检测，使用线程池异步处理: {filename} ({file_size_mb:.2f}MB)")
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(executor, docx_handler.convert, raw_content)
+        result = await loop.run_in_executor(
+            executor, 
+            docx_handler.convert, 
+            raw_content,
+            convert_to_pdf  # 传递 convert_to_pdf 参数
+        )
         logger.info(f"文件转换完成: {filename}")
         return result
     
@@ -172,7 +213,7 @@ async def _convert_file_content(raw_content: bytes, ext: str, filename: str = ""
         return _convert_html_bytes(raw_content)
     elif ext == "docx":
         logger.info(f"转换DOCX文件: {filename}")
-        result = docx_handler.convert(raw_content)
+        result = docx_handler.convert(raw_content, convert_to_pdf)  # 传递 convert_to_pdf 参数
         logger.info(f"DOCX转换完成: {filename}")
         return result
     elif ext in TEXT_EXTENSIONS:
@@ -189,7 +230,10 @@ async def _convert_file_content(raw_content: bytes, ext: str, filename: str = ""
         raise ValueError(f"Unsupported file type: {ext or 'unknown'}")
 
 
-async def convert_single_file_to_markdown(file: UploadFile) -> str:
+async def convert_single_file_to_markdown(
+    file: UploadFile, 
+    convert_to_pdf: bool = True
+) -> str:
     """转换单个文件到 Markdown，返回转换结果字符串。如果转换失败，返回错误信息。"""
     filename = file.filename or ""
     logger.info(f"批量处理 - 开始转换文件: {filename}")
@@ -209,13 +253,22 @@ async def convert_single_file_to_markdown(file: UploadFile) -> str:
             logger.warning(f"批量处理 - 文件超过大小限制: {filename}")
             return f"文件 {filename} 超过大小限制 (200MB)"
 
-        markdown_text = await _convert_file_content(raw_content, ext, filename)
+        # 对于 DOCX 文件，如果启用了 convert_to_pdf，使用特殊处理
+        if ext == "docx" and convert_to_pdf:
+            markdown_text = await _convert_docx_via_pdf(raw_content, filename)
+        else:
+            markdown_text = await _convert_file_content(raw_content, ext, filename, convert_to_pdf)
+        
         logger.info(f"批量处理 - 文件转换成功: {filename}")
         return markdown_text
 
     except ValueError as exc:
         logger.error(f"批量处理 - 文件类型不支持: {filename}, 错误: {exc}")
         return f"文件 {filename} 类型不支持: {exc}"
+    except RuntimeError as exc:
+        # DOCX 转 PDF 失败，返回明确的错误信息
+        logger.error(f"批量处理 - DOCX 转 PDF 失败: {filename}, 错误: {exc}")
+        return f"文件 {filename} DOCX 转 PDF 转换失败: {exc}"
     except Exception as exc:  # noqa: BLE001
         logger.exception(f"批量处理 - 文件转换失败: {filename}, 错误: {exc}")
         return f"文件 {filename} 转换失败: {exc}"
@@ -229,13 +282,17 @@ async def convert_single_file_to_markdown(file: UploadFile) -> str:
         "- 支持格式：`html` / `htm`、`txt`、`docx`、`xls` / `xlsx`、`pdf`（扫描件会自动 OCR）\n"
         "- 文件大小：统一限制为 200MB，超出会返回 400\n"
         "- 大文件优化：超过 50MB 的文件会自动使用异步处理，避免阻塞\n"
+        "- DOCX 转 PDF：可通过 `convert_to_pdf` 参数启用，先将 DOCX 转为 PDF 再解析（需要 LibreOffice）\n"
         "- 返回字段：`data` 为 Markdown 字符串，`message` 表示状态"
     ),
 )
-async def convert_to_markdown(file: UploadFile = File(...)):
+async def convert_to_markdown(
+    file: UploadFile = File(...),
+    convert_to_pdf: bool = Query(True, description="对于 DOCX 文件，是否先转换为 PDF 再解析")
+):
     """接受上传文件并将其内容转换为 Markdown。"""
     filename = file.filename or ""
-    logger.info(f"收到文件上传请求: {filename}")
+    logger.info(f"收到文件上传请求: {filename}, convert_to_pdf={convert_to_pdf}")
 
     # 简单根据扩展名判断类型
     ext = ""
@@ -252,13 +309,23 @@ async def convert_to_markdown(file: UploadFile = File(...)):
             logger.warning(f"文件超过大小限制: {filename}, 大小: {len(raw_content) / (1024*1024):.2f}MB")
             return build_response(400, "", "File is too large (limit 200MB)")
 
-        markdown_text = await _convert_file_content(raw_content, ext, filename)
+        # 对于 DOCX 文件，如果启用了 convert_to_pdf，使用特殊处理
+        if ext == "docx" and convert_to_pdf:
+            logger.info(f"使用 PDF 转换模式处理 DOCX 文件: {filename}")
+            markdown_text = await _convert_docx_via_pdf(raw_content, filename)
+        else:
+            markdown_text = await _convert_file_content(raw_content, ext, filename, convert_to_pdf)
+        
         logger.info(f"文件转换成功: {filename}")
         return build_response(200, markdown_text, "success")
 
     except ValueError as exc:
         logger.error(f"不支持的文件类型: {filename}, 错误: {exc}")
         return build_response(400, "", f"Unsupported file type: {exc}")
+    except RuntimeError as exc:
+        # 捕获 DOCX 转 PDF 的转换失败异常
+        logger.error(f"文件转换失败: {filename}, 错误: {exc}")
+        return build_response(500, "", f"转换失败: {exc}")
     except Exception as exc:  # noqa: BLE001
         logger.exception(f"文件转换失败: {filename}, 错误: {exc}")
         return build_response(500, "", f"转换失败: {exc}")
@@ -340,19 +407,26 @@ async def download_image(image_url: str = Query(..., description="图片的原�
         "- 支持格式：`html` / `htm`、`txt`、`docx`、`xls` / `xlsx`、`pdf`（扫描件会自动 OCR）\n"
         "- 文件大小：每个文件限制为 200MB\n"
         "- 处理方式：并行处理多个文件以提高效率\n"
+        "- DOCX 转 PDF：可通过 `convert_to_pdf` 参数启用\n"
         "- 返回字段：`data` 为 Markdown 字符串数组（按上传顺序），`message` 表示处理状态"
     ),
 )
-async def convert_multiple_to_markdown(files: List[UploadFile] = File(...)):
+async def convert_multiple_to_markdown(
+    files: List[UploadFile] = File(...),
+    convert_to_pdf: bool = Query(True, description="对于 DOCX 文件，是否先转换为 PDF 再解析")
+):
     """接受多个上传文件并将其内容批量转换为 Markdown 数组。"""
     if not files:
         logger.warning("批量转换 - 没有上传文件")
         return build_response(400, [], "没有上传文件")
 
-    logger.info(f"批量转换 - 收到 {len(files)} 个文件")
+    logger.info(f"批量转换 - 收到 {len(files)} 个文件, convert_to_pdf={convert_to_pdf}")
     try:
         # 使用异步任务并行处理多个文件转换
-        tasks = [convert_single_file_to_markdown(file) for file in files]
+        tasks = [
+            convert_single_file_to_markdown(file, convert_to_pdf) 
+            for file in files
+        ]
         results = await asyncio.gather(*tasks)
 
         logger.info(f"批量转换 - 成功处理 {len(files)} 个文件")

@@ -51,21 +51,42 @@ class DocxToMarkdownHandler:
                 "Pandoc未安装。请先安装Pandoc: https://pandoc.org/installing.html"
             ) from e
 
-    def convert(self, docx_bytes: bytes) -> str:
+    def convert(self, docx_bytes: bytes, convert_to_pdf: bool = False) -> str:
         """
         将 DOCX 文档转换为 Markdown 格式。
         
         Args:
             docx_bytes: DOCX文件的字节内容
+            convert_to_pdf: 如果为 True，先将 DOCX 转换为 PDF，然后使用 PDF 解析器解析
             
         Returns:
             转换后的Markdown文本。默认：图片存储到仓库并以 URL 引用；如配置
             INLINE_IMAGE_BASE64=True，则回退为内联 base64。
+            
+        Raises:
+            RuntimeError: 当 convert_to_pdf=True 且转换失败时抛出
         """
         if not isinstance(docx_bytes, (bytes, bytearray)):
             raise TypeError("docx_bytes must be bytes")
         if not docx_bytes:
             raise ValueError("docx file is empty")
+
+        # 如果要求转换为 PDF，使用 PDF 解析器
+        if convert_to_pdf:
+            logger.info("使用 PDF 转换模式处理 DOCX 文件")
+            # 使用 LibreOffice 转换为 PDF
+            from handlers.libreoffice_converter import LibreOfficeConverter
+            from handlers.pdf_handler import PdfToMarkdownHandler
+            
+            converter = LibreOfficeConverter()
+            pdf_bytes = converter.convert_docx_to_pdf(docx_bytes)
+            
+            # 使用 PDF 解析器解析
+            pdf_handler = PdfToMarkdownHandler()
+            result = pdf_handler.convert(pdf_bytes)
+            
+            logger.info("DOCX 通过 PDF 转换完成")
+            return result
 
         logger.info(f"开始DOCX转换，文件大小: {len(docx_bytes) / (1024*1024):.2f}MB")
 
