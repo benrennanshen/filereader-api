@@ -126,7 +126,8 @@ docx_handler = DocxToMarkdownHandler(
     inline_image_base64=INLINE_IMAGE_BASE64,
 )
 excel_handler = ExcelToMarkdownHandler()
-pdf_handler = PdfToMarkdownHandler()
+# PDF 处理器默认使用 MinerU API，API URL 从环境变量 MINERU_API_URL 读取
+pdf_handler = PdfToMarkdownHandler(use_mineru=True, mineru_api_url=_get_env("MINERU_API_URL", ""))
 
 # 创建 ZIP 生成器
 zip_generator = MarkdownZipGenerator(
@@ -153,22 +154,16 @@ def build_response(http_code: int, data, message: str) -> JSONResponse:
 async def _convert_docx_via_pdf(raw_content: bytes, filename: str) -> str:
     """通过 PDF 转换方式处理 DOCX 文件"""
     from handlers.libreoffice_converter import LibreOfficeConverter
-    from handlers.pdf_handler import PdfToMarkdownHandler
     
     try:
         # 使用 LibreOffice 转换为 PDF
         converter = LibreOfficeConverter()
         pdf_bytes = converter.convert_docx_to_pdf(raw_content)
         
-        # 使用 PDF 解析器解析
-        pdf_handler = PdfToMarkdownHandler()
-        
-        # 对于大文件，使用线程池
-        if len(raw_content) > LARGE_FILE_THRESHOLD:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(executor, pdf_handler.convert, pdf_bytes)
-        else:
-            result = pdf_handler.convert(pdf_bytes)
+        # 使用全局 PDF 解析器解析（已经是异步的）
+        # 生成 PDF 文件名
+        pdf_filename = filename.rsplit(".", 1)[0] + ".pdf" if "." in filename else filename + ".pdf"
+        result = await pdf_handler.convert(pdf_bytes, pdf_filename)
         
         return result
     except RuntimeError as e:
@@ -224,7 +219,7 @@ async def _convert_file_content(
         return excel_handler.convert(raw_content, ext)
     elif ext in PDF_EXTENSIONS:
         logger.info(f"转换PDF文件: {filename}")
-        return pdf_handler.convert(raw_content)
+        return await pdf_handler.convert(raw_content, filename)
     else:
         logger.error(f"不支持的文件类型: {ext or 'unknown'}, 文件: {filename}")
         raise ValueError(f"Unsupported file type: {ext or 'unknown'}")
